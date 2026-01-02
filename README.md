@@ -11,13 +11,13 @@ Quick start (development):
    RCLONE_REMOTE=myremote:my/path
 
 3. Run:
-   uvicorn src.app.main:app --reload --port 8080
+   uvicorn src.app.main:app --reload --port 3031
 
-UI is at: http://localhost:8080/index.html (served from container in production)
+UI is at: http://localhost:3031/index.html (served from container in production)
 
 Docker:
  - Build: docker build -t music-uploader .
- - Run: docker run -e RCLONE_REMOTE=myremote:my/path -p 8080:8080 music-uploader
+ - Run: docker run -e RCLONE_REMOTE=myremote:my/path -p 3031:3031 music-uploader
  - For armv7, use docker buildx: docker buildx build --platform linux/arm/v7 -t music-uploader:armv7 .
 
 Security & Compliance:

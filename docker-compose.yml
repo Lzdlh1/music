@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
       # For ARMv7 use: docker buildx build --platform linux/arm/v7
     ports:
-      - "8080:8080"
+      - "3031:3031"
     environment:
       - RCLONE_REMOTE=${RCLONE_REMOTE}
       - DOWNLOAD_DIR=/data/downloads

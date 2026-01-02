@@ -17,10 +17,10 @@
 - Local dev:
   1. Create `.env` (or use `.env.example`) with `SECRET_KEY` and `RCLONE_REMOTE`.
   2. Install: `python -m pip install -r requirements.txt`.
-  3. Run: `uvicorn src.app.main:app --reload --port 8080`.
+  3. Run: `uvicorn src.app.main:app --reload --port 3031`.
 - To run in Docker:
   - `docker build -t music-uploader .`
-  - `docker run -e RCLONE_REMOTE=myremote:my/path -p 8080:8080 music-uploader`
+  - `docker run -e RCLONE_REMOTE=myremote:my/path -p 3031:3031 music-uploader`
   - For ARMv7: use `docker buildx build --platform linux/arm/v7 -t music-uploader:armv7 .`
 - rclone integration: mount or provide `~/.config/rclone/rclone.conf` via volume and set `RCLONE_REMOTE` env to the desired remote target.
 
