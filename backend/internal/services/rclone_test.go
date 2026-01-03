@@ -22,9 +22,9 @@ func TestRcloneCopy_Success(t *testing.T) {
 	f.Chmod(0755)
 	f.Close()
 
-	old := rcloneCmd
-	rcloneCmd = f.Name()
-	defer func() { rcloneCmd = old }()
+old := RcloneCmd
+	RcloneCmd = f.Name()
+	defer func() { RcloneCmd = old }()
 
 	// call RcloneCopy (remote must not be empty)
 	if err := RcloneCopy("/tmp/somefile", "myremote:base"); err != nil {
@@ -53,9 +53,9 @@ func TestRcloneCopy_Failure(t *testing.T) {
 	f.Chmod(0755)
 	f.Close()
 
-	old := rcloneCmd
-	rcloneCmd = f.Name()
-	defer func() { rcloneCmd = old }()
+	old := RcloneCmd
+	RcloneCmd = f.Name()
+	defer func() { RcloneCmd = old }()
 
 	if err := RcloneCopy("/tmp/somefile", "myremote:base"); err == nil {
 		t.Fatalf("expected error when rclone fails")

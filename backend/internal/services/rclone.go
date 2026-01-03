@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// rcloneCmd is injectable for tests (defaults to "rclone")
-var rcloneCmd = "rclone"
+// RcloneCmd is injectable for tests (defaults to "rclone")
+var RcloneCmd = "rclone"
 
 // RcloneCopy copies local file to remote (RCLONE_REMOTE like "myremote:path")
 func RcloneCopy(localPath string, remote string) error {
@@ -18,7 +18,7 @@ func RcloneCopy(localPath string, remote string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, rcloneCmd, "copy", localPath, remote)
+	cmd := exec.CommandContext(ctx, RcloneCmd, "copy", localPath, remote)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return errors.New(string(out) + ": " + err.Error())
