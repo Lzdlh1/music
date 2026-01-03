@@ -198,6 +198,25 @@ jobs:
           cd release-files || true
           ls -la
 
+          # generate SHA256 sums (include armv7 explicitely)
+          echo "🔐 生成 SHA256 校验和..."
+          shopt -s nullglob || true
+          files=("${PROJECT_NAME}"-*.tar.gz "${PROJECT_NAME}"-*.zip)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "⚠️ 未找到任何打包文件来生成 SHA256SUMS"
+          else
+            sha256sum ${PROJECT_NAME}-*.tar.gz ${PROJECT_NAME}-*.zip > SHA256SUMS 2>/dev/null || true
+            echo "📋 SHA256SUMS 内容："
+            cat SHA256SUMS || true
+          fi
+
+          # warn if armv7 artifact missing
+          if [ ! -f "${PROJECT_NAME}-linux-armv7a.tar.gz" ]; then
+            echo "⚠️ 注意：armv7 构建产物 ${PROJECT_NAME}-linux-armv7a.tar.gz 未找到。"
+          else
+            echo "✅ 找到 armv7 构建产物"
+          fi
+
       - name: 📋 Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -211,6 +230,22 @@ jobs:
 
             ## Assets
             - Docker images and front-end artifacts
+
+            ## Download
+            ### Linux
+            - **AMD64**: [`${{ env.PROJECT_NAME }}-linux-amd64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-linux-amd64.tar.gz)
+            - **ARM64**: [`${{ env.PROJECT_NAME }}-linux-arm64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-linux-arm64.tar.gz)
+            - **ARMv7 (arm/v7)**: [`${{ env.PROJECT_NAME }}-linux-armv7a.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-linux-armv7a.tar.gz)
+
+            ### macOS
+            - **darwin-amd64**: [`${{ env.PROJECT_NAME }}-darwin-amd64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-darwin-amd64.tar.gz)
+            - **darwin-arm64**: [`${{ env.PROJECT_NAME }}-darwin-arm64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-darwin-arm64.tar.gz)
+
+            ### Windows
+            - **windows-amd64**: [`${{ env.PROJECT_NAME }}-windows-amd64.zip`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-windows-amd64.zip)
+
+            ## Checksums
+            - `SHA256SUMS` file is included and contains checksums for packaged assets.
           files: |
             release-files/*
 
