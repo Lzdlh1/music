@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"log"
 )
 
 // RcloneCmd is injectable for tests (defaults to "rclone")
@@ -44,7 +45,9 @@ func RcloneCopy(localPath string, remote string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, RcloneCmd, "copy", localPath, remote)
+	log.Printf("RcloneCopy running command: %s %v", RcloneCmd, cmd.Args)
 	out, err := cmd.CombinedOutput()
+	log.Printf("RcloneCopy output: %s, err: %v", string(out), err)
 	if err != nil {
 		return errors.New(string(out) + ": " + err.Error())
 	}

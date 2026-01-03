@@ -16,6 +16,7 @@ func RegisterRoutes(rg *gin.RouterGroup, gormDB *gorm.DB, cfg *config.Config) {
 	authed.Use(AuthMiddleware(cfg.SecretKey))
 	{
 		authed.POST("/tasks", h.CreateTask)
+		authed.POST("/tasks/:id/retry", h.RetryTask)
 		authed.GET("/tasks", h.ListTasks)
 		authed.GET("/tasks/:id", h.GetTask)
 	}

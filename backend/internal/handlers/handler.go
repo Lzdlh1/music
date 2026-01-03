@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Lzdlh1/music-backend/internal/config"
@@ -78,6 +81,7 @@ type createTaskReq struct {
 }
 
 func (h *Handler) CreateTask(c *gin.Context) {
+	log.Printf("CreateTask called")
 	var req createTaskReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -90,10 +94,11 @@ func (h *Handler) CreateTask(c *gin.Context) {
 		return
 	}
 
-	// launch background worker to download and upload
-	go func(t *models.Task, cookie string) {
+
+	// helper to run the task
+	run := func(t *models.Task, cookie string) {
 		// update status
-		h.DB.Model(t).Updates(map[string]interface{}{"status": "running", "updated_at": time.Now()})
+		h.DB.Model(t).Updates(map[string]interface{}{"status": "running", "updated_at": time.Now(), "error_message": ""})
 
 		// create temp file
 		log.Printf("task %d: starting download %s", t.ID, t.URL)
@@ -115,9 +120,63 @@ func (h *Handler) CreateTask(c *gin.Context) {
 
 		log.Printf("task %d: done", t.ID)
 		h.DB.Model(t).Updates(map[string]interface{}{"status": "done", "updated_at": time.Now()})
-	}(task, req.Cookie)
+	}
+
+	// launch background worker
+	log.Printf("task %d: launching background worker", task.ID)
+	go run(task, req.Cookie)
 
 	c.JSON(http.StatusAccepted, gin.H{"id": task.ID, "status": task.Status})
+}
+
+// RetryTask accepts optional { cookie } body; only owner may retry a failed task
+func (h *Handler) RetryTask(c *gin.Context) {
+	id := c.Param("id")
+	var task models.Task
+	if err := h.DB.First(&task, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	userID := c.GetUint("user_id")
+	if task.OwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if task.Status != "failed" && task.Status != "done" {
+		// allow retry if failed; if already done, also allow re-run (user choice)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task not retryable"})
+		return
+	}
+	var body struct{ Cookie string `json:"cookie"` }
+	if err := c.ShouldBindJSON(&body); err != nil {
+		// ignore missing body (no cookie provided)
+		var syntaxErr *json.UnmarshalTypeError
+		if err != nil && !errors.As(err, &syntaxErr) {
+			// if it's not a missing body error, return
+			if !strings.Contains(err.Error(), "EOF") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+	}
+	// update status and clear error
+	h.DB.Model(&task).Updates(map[string]interface{}{"status": "queued", "error_message": "", "updated_at": time.Now()})
+	// re-run in background with provided cookie (if any)
+	go func(t *models.Task, cookie string) {
+		h.DB.Model(t).Updates(map[string]interface{}{"status": "running", "updated_at": time.Now(), "error_message": ""})
+		fpath, err := services.DownloadToTemp(t.URL, cookie)
+		if err != nil {
+			h.DB.Model(t).Updates(map[string]interface{}{"status": "failed", "error_message": err.Error(), "updated_at": time.Now()})
+			return
+		}
+		defer os.Remove(fpath)
+		if err := services.RcloneCopy(fpath, h.Cfg.RcloneRemote); err != nil {
+			h.DB.Model(t).Updates(map[string]interface{}{"status": "failed", "error_message": err.Error(), "updated_at": time.Now()})
+			return
+		}
+		h.DB.Model(t).Updates(map[string]interface{}{"status": "done", "updated_at": time.Now()})
+	}(&task, body.Cookie)
+	c.JSON(http.StatusAccepted, gin.H{"id": task.ID, "status": "queued"})
 }
 
 func (h *Handler) ListTasks(c *gin.Context) {
