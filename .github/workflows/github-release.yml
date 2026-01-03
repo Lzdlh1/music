@@ -112,6 +112,10 @@ jobs:
             platform: linux/amd64
           - suffix: linux-arm64
             platform: linux/arm64
+          - suffix: linux-armv7a
+            platform: linux/arm/v7
+            goarch: arm
+            goarm: 7
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
