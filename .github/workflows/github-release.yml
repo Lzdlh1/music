@@ -217,35 +217,48 @@ jobs:
             echo "✅ 找到 armv7 构建产物"
           fi
 
+      - name: 🧾 Generate release body from artifacts
+        id: makebody
+        run: |
+          set -euo pipefail
+          VERSION="${{ env.VERSION }}"
+          REPO="${{ github.repository }}"
+          OUTFILE=release-files/RELEASE_BODY.md
+          echo "## Release $VERSION" > "$OUTFILE"
+          echo "" >> "$OUTFILE"
+          echo "- commit: ${{ env.VAR_COMMIT }}" >> "$OUTFILE"
+          echo "- build: ${{ env.VAR_BUILD_DATE }}" >> "$OUTFILE"
+          echo "" >> "$OUTFILE"
+          echo "## Assets" >> "$OUTFILE"
+          echo "" >> "$OUTFILE"
+          if [ -d release-files ]; then
+            for f in release-files/*; do
+              [ -e "$f" ] || continue
+              fname=$(basename "$f")
+              echo "- [$fname](https://github.com/$REPO/releases/download/$VERSION/$fname)" >> "$OUTFILE"
+            done
+          else
+            echo "_No release-files directory found_" >> "$OUTFILE"
+          fi
+          echo "" >> "$OUTFILE"
+          echo "## Checksums" >> "$OUTFILE"
+          if [ -f release-files/SHA256SUMS ]; then
+            echo "SHA256SUMS is included in release-files/" >> "$OUTFILE"
+          else
+            echo "No SHA256SUMS found" >> "$OUTFILE"
+          fi
+          echo "" >> "$OUTFILE"
+          echo "Generated release body:" && cat "$OUTFILE"
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          cat "$OUTFILE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: 📋 Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
           name: "${{ env.VERSION }}"
-          body: |
-            ## Release ${{ env.VERSION }}
-
-            - commit: ${{ env.VAR_COMMIT }}
-            - build: ${{ env.VAR_BUILD_DATE }}
-
-            ## Assets
-            - Docker images and front-end artifacts
-
-            ## Download
-            ### Linux
-            - **AMD64**: [`${{ env.PROJECT_NAME }}-linux-amd64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-linux-amd64.tar.gz)
-            - **ARM64**: [`${{ env.PROJECT_NAME }}-linux-arm64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-linux-arm64.tar.gz)
-            - **ARMv7 (arm/v7)**: [`${{ env.PROJECT_NAME }}-linux-armv7a.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-linux-armv7a.tar.gz)
-
-            ### macOS
-            - **darwin-amd64**: [`${{ env.PROJECT_NAME }}-darwin-amd64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-darwin-amd64.tar.gz)
-            - **darwin-arm64**: [`${{ env.PROJECT_NAME }}-darwin-arm64.tar.gz`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-darwin-arm64.tar.gz)
-
-            ### Windows
-            - **windows-amd64**: [`${{ env.PROJECT_NAME }}-windows-amd64.zip`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION }}/${{ env.PROJECT_NAME }}-windows-amd64.zip)
-
-            ## Checksums
-            - `SHA256SUMS` file is included and contains checksums for packaged assets.
+          body: ${{ steps.makebody.outputs.body }}
           files: |
             release-files/*
 
