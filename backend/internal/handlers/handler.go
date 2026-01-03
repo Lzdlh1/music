@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"log"
 )
 
 type Handler struct {
@@ -95,19 +96,24 @@ func (h *Handler) CreateTask(c *gin.Context) {
 		h.DB.Model(t).Updates(map[string]interface{}{"status": "running", "updated_at": time.Now()})
 
 		// create temp file
+		log.Printf("task %d: starting download %s", t.ID, t.URL)
 		fpath, err := services.DownloadToTemp(t.URL, cookie)
 		if err != nil {
-			h.DB.Model(t).Updates(map[string]interface{}{"status": "failed"})
+			log.Printf("task %d: download failed: %v", t.ID, err)
+			h.DB.Model(t).Updates(map[string]interface{}{"status": "failed", "error_message": err.Error(), "updated_at": time.Now()})
 			return
 		}
 		defer os.Remove(fpath)
 
 		// upload with rclone
+		log.Printf("task %d: uploading %s to %s", t.ID, fpath, h.Cfg.RcloneRemote)
 		if err := services.RcloneCopy(fpath, h.Cfg.RcloneRemote); err != nil {
-			h.DB.Model(t).Updates(map[string]interface{}{"status": "failed"})
+			log.Printf("task %d: upload failed: %v", t.ID, err)
+			h.DB.Model(t).Updates(map[string]interface{}{"status": "failed", "error_message": err.Error(), "updated_at": time.Now()})
 			return
 		}
 
+		log.Printf("task %d: done", t.ID)
 		h.DB.Model(t).Updates(map[string]interface{}{"status": "done", "updated_at": time.Now()})
 	}(task, req.Cookie)
 

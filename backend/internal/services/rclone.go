@@ -3,7 +3,10 @@ package services
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -11,10 +14,32 @@ import (
 // RcloneCmd is injectable for tests (defaults to "rclone")
 var RcloneCmd = "rclone"
 
-// RcloneCopy copies local file to remote (RCLONE_REMOTE like "myremote:path")
+// RcloneCopy copies local file to remote (RCLONE_REMOTE like "myremote:path").
+// Special dev helper: if remote starts with "DIRECT:", copy directly to the filesystem path after the prefix.
 func RcloneCopy(localPath string, remote string) error {
 	if remote == "" {
 		return errors.New("RCLONE_REMOTE is not configured")
+	}
+	if strings.HasPrefix(remote, "DIRECT:") {
+		destDir := strings.TrimPrefix(remote, "DIRECT:")
+		if err := os.MkdirAll(destDir, 0o755); err != nil {
+			return err
+		}
+		dst := filepath.Join(destDir, filepath.Base(localPath))
+		srcF, err := os.Open(localPath)
+		if err != nil {
+			return err
+		}
+		defer srcF.Close()
+		dstF, err := os.Create(dst)
+		if err != nil {
+			return err
+		}
+		defer dstF.Close()
+		if _, err := io.Copy(dstF, srcF); err != nil {
+			return err
+		}
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

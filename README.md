@@ -28,3 +28,26 @@ Notes for contributors:
  - Authentication: simple username/password with JWT tokens.
  - Uploads are performed with rclone; configure your remotes in `~/.config/rclone/rclone.conf` or provide a mounted config.
  - Search endpoint is a stub and must be extended only if you have permission or a documented API from the source.
+
+Security note: Storing cookies in localStorage has security and privacy risks — they can be accessed by any script running in the page. Do not store credentials you don't trust here. The backend will not persist cookie values; they are used only for the single request that created the task.
+
+Docker Compose (one-command development) ✅
+
+You can bring up both services (backend and frontend dev server) with docker-compose. Notes:
+- Frontend dev server is exposed at http://localhost:12233
+- Backend API is exposed at http://localhost:12234 (mapped from the container's 12233)
+
+Quick start:
+
+1. Copy or set env values in your shell (for example):
+
+   export SECRET_KEY=replace-me
+   export RCLONE_REMOTE=myremote:my/path
+
+2. Start services:
+
+   docker compose up --build
+
+3. Open the frontend at http://localhost:12233 and use the app. The frontend will call the backend API at http://localhost:12234/api by default.
+
+If you prefer different host ports, edit `docker-compose.yml` accordingly.

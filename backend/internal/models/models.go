@@ -18,11 +18,12 @@ type User struct {
 
 // Task represents a download/upload job. Note: we DO NOT store user cookies.
 type Task struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	Title     string    `json:"title"`
-	URL       string    `json:"url"`
-	Status    string    `json:"status"` // queued, running, done, failed
-	OwnerID   uint      `json:"owner_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	Title        string    `json:"title"`
+	URL          string    `json:"url"`
+	Status       string    `json:"status"` // queued, running, done, failed
+	ErrorMessage string    `json:"error_message"`
+	OwnerID      uint      `json:"owner_id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }

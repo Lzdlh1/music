@@ -1,14 +1,15 @@
-FROM golang:1.24-alpine AS build
+FROM golang:1.24 AS build
 WORKDIR /app
 COPY go.mod .
 COPY go.sum .
 RUN go env -w GOPROXY=https://proxy.golang.org
-RUN apk add --no-cache git
+RUN apt-get update && apt-get install -y --no-install-recommends git gcc libc6-dev build-essential pkg-config
 COPY . .
+ENV CGO_ENABLED=1
 RUN go build -o music-backend ./cmd/server
 
-FROM alpine:3.18
-RUN apk add --no-cache ca-certificates rclone
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates rclone && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/music-backend /app/music-backend
 COPY .env.example /app/.env.example

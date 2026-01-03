@@ -1,18 +1,30 @@
-version: '3.8'
+version: "3.8"
+
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      # For ARMv7 use: docker buildx build --platform linux/arm/v7
-    ports:
-      - "3031:3031"
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env.example
     environment:
       - RCLONE_REMOTE=${RCLONE_REMOTE}
-      - DOWNLOAD_DIR=/data/downloads
-      - DATABASE_URL=sqlite:///./data.db
       - SECRET_KEY=${SECRET_KEY}
+    ports:
+      - "12234:12233" # backend container listens on 12233, mapped to host 12234 to avoid conflict with frontend
     volumes:
-      - ./data:/data
+      - ./backend/data:/app/data
       - ./rclone:/root/.config/rclone
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "12233:12233" # dev server exposed on host 12233
+    environment:
+      - VITE_API_BASE=http://localhost:12234/api # frontend (in browser) will call backend on host port 12234
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev"]
     restart: unless-stopped
