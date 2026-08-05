@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  musicflow:
+    build: .
+    container_name: musicflow
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./temp:/app/temp
+    environment:
+      - TZ=Asia/Shanghai

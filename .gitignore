@@ -1,0 +1,22 @@
+# 编译产物
+/server
+*.exe
+
+# 数据文件
+data/
+
+# 临时文件
+temp/
+
+# 本地配置（含敏感信息，模板见 config.yaml.example）
+config.yaml
+
+# 前端构建产物
+web/dist/
+
+# 日志
+*.log
+
+# 编辑器
+.idea
+.vscode/

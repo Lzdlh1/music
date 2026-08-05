@@ -1,0 +1,44 @@
+server:
+  port: 15698
+  host: "0.0.0.0"
+  secret_key: "change-me-to-a-random-string"
+
+auth:
+  enabled: false
+  username: "admin"
+  password: "musicflow"
+  jwt_secret: "change-me-in-production"
+
+database:
+  type: "sqlite"
+  dsn: "./data/musicflow.db"
+
+scheduler:
+  max_concurrent_downloads: 3
+  max_concurrent_uploads: 5
+  download_speed_limit: 0
+  upload_speed_limit: 0
+  retry_max: 3
+  retry_backoff: "2s,10s,30s"
+  temp_dir: "./temp"
+  auto_cleanup: true
+
+download:
+  default_quality: "FLAC"
+  source_priority:
+    - telegram
+    - netease
+    - qqmusic
+    - custom
+  embed_cover: true
+  embed_lyrics: true
+  save_lrc_file: true
+
+naming:
+  template: "{artist}/{album} ({year})/{track_no:02d} - {title}.{ext}"
+  cover_filename: "cover.jpg"
+
+log:
+  level: "info"
+  file: "./data/musicflow.log"
+  max_size: 100
