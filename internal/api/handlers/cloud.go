@@ -162,7 +162,7 @@ func (h *CloudHandler) Stream(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": true, "message": "path is required"})
 	}
 
-	return h.streamBackend(c, backend, p, "")
+	return h.streamBackend(c, backend, p, "", "")
 }
 
 // LibraryStream 流式播放音乐库歌曲（从存储后端读取，支持 Range）
@@ -188,7 +188,7 @@ func (h *CloudHandler) LibraryStream(c *fiber.Ctx) error {
 	if storageID != "" {
 		if p, ok := paths[storageID]; ok {
 			if backend, ok := h.manager.Get(storageID); ok {
-				return h.streamBackend(c, backend, p, item.Title)
+				return h.streamBackend(c, backend, p, item.Title, item.Format)
 			}
 		}
 	}
@@ -199,7 +199,7 @@ func (h *CloudHandler) LibraryStream(c *fiber.Ctx) error {
 		if !ok {
 			continue
 		}
-		return h.streamBackend(c, backend, p, item.Title)
+		return h.streamBackend(c, backend, p, item.Title, item.Format)
 	}
 
 	return c.Status(404).JSON(fiber.Map{"error": true, "message": "no playable storage backend"})
@@ -221,7 +221,7 @@ func (h *CloudHandler) LibraryLyrics(c *fiber.Ctx) error {
 }
 
 // streamBackend 从存储后端拉流输出，支持 Range 与附件下载
-func (h *CloudHandler) streamBackend(c *fiber.Ctx, backend storage.Backend, p, displayName string) error {
+func (h *CloudHandler) streamBackend(c *fiber.Ctx, backend storage.Backend, p, displayName, format string) error {
 	size, err := backend.Size(c.Context(), p)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": true, "message": "file not found"})
@@ -241,10 +241,17 @@ func (h *CloudHandler) streamBackend(c *fiber.Ctx, backend storage.Backend, p, d
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
 	}
-	defer rc.Close()
+
+	// MIME 优先按路径扩展名推断；推断失败时用库记录的格式兜底
+	ct := mimeTypeByExt(p)
+	if ct == "application/octet-stream" {
+		if t := mimeTypeByFormat(format); t != "" {
+			ct = t
+		}
+	}
 
 	c.Set("Accept-Ranges", "bytes")
-	c.Set("Content-Type", mimeTypeByExt(p))
+	c.Set("Content-Type", ct)
 
 	if partial {
 		c.Status(fiber.StatusPartialContent)
@@ -264,7 +271,10 @@ func (h *CloudHandler) streamBackend(c *fiber.Ctx, backend storage.Backend, p, d
 		c.Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, displayName))
 	}
 
+	// 注意：必须在 SetBodyStreamWriter 回调内关闭，回调在 handler 返回后才执行，
+	// 若提前关闭文件，流式写入将得到空 body（浏览器无法解码音频）
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer rc.Close()
 		if _, err := io.Copy(w, rc); err != nil {
 			h.log.Debug("stream copy ended", zap.Error(err))
 		}
@@ -316,6 +326,23 @@ func parseByteRange(spec string, size int64) (int64, int64, bool) {
 		return 0, 0, false
 	}
 	return start, end, true
+}
+
+// mimeTypeByFormat 根据格式名推断音频 MIME（兜底：路径无扩展名时使用）
+func mimeTypeByFormat(format string) string {
+	switch strings.ToLower(format) {
+	case "mp3":
+		return "audio/mpeg"
+	case "flac":
+		return "audio/flac"
+	case "m4a", "aac", "mp4":
+		return "audio/mp4"
+	case "ogg", "opus":
+		return "audio/ogg"
+	case "wav":
+		return "audio/wav"
+	}
+	return ""
 }
 
 // mimeTypeByExt 根据扩展名推断 MIME 类型
