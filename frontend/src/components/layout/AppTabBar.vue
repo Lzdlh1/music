@@ -12,6 +12,7 @@ const tabs = [
   { path: '/search', icon: 'material-symbols:search', label: '搜索' },
   { path: '/queue', icon: 'material-symbols:download', label: '队列' },
   { path: '/library', icon: 'material-symbols:library-music', label: '音乐库' },
+  { path: '/cloud', icon: 'material-symbols:cloud', label: '网盘' },
   { path: '/settings', icon: 'material-symbols:settings', label: '设置' },
 ]
 

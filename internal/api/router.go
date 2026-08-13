@@ -1,6 +1,8 @@
 package api
 
 import (
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	fiberlog "github.com/gofiber/fiber/v2/middleware/logger"
@@ -93,8 +95,15 @@ func (s *Server) setupMiddleware() {
 }
 
 func (s *Server) setupRoutes() {
-	// 静态文件（前端构建产物）
-	s.app.Static("/", "./web/dist")
+	// 静态文件（前端构建产物，html 禁用缓存防止旧 bundle 混用）
+	s.app.Static("/", "./web/dist", fiber.Static{
+		ModifyResponse: func(c *fiber.Ctx) error {
+			if strings.Contains(string(c.Response().Header.ContentType()), "text/html") {
+				c.Set("Cache-Control", "no-store")
+			}
+			return nil
+		},
+	})
 
 	api := s.app.Group("/api/v1")
 
@@ -224,9 +233,9 @@ func (s *Server) setupRoutes() {
 	})
 	s.app.Get("/ws/tasks", websocket.New(s.wsHub.HandleTasksWS))
 
-	// SPA 回退：前端路由
+	// SPA 回退：前端路由（no-store 防止浏览器缓存旧版 index.html 导致 chunk 加载失败）
 	s.app.Get("/*", func(c *fiber.Ctx) error {
-		c.Set("Cache-Control", "no-cache")
+		c.Set("Cache-Control", "no-store")
 		return c.SendFile("./web/dist/index.html")
 	})
 }
