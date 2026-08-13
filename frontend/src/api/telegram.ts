@@ -125,10 +125,6 @@ export function listAllChannelFiles(params?: { page?: number; page_size?: number
   return api.get('/telegram/channels/files', { params })
 }
 
-export function getFileDownloadURL(fileId: string) {
-  return api.get(`/telegram/channels/files/${fileId}/download`)
-}
-
 export function saveFileToLibrary(fileId: string) {
   return api.post(`/telegram/channels/files/${fileId}/save`)
 }

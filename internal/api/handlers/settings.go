@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/musicflow/musicflow/internal/db/models"
 	"github.com/musicflow/musicflow/internal/storage"
+	"github.com/musicflow/musicflow/internal/storage/factory"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -58,6 +59,18 @@ func (h *StorageHandler) Create(c *fiber.Ctx) error {
 	if err := h.db.Create(&target).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
 	}
+	// 创建后注册到运行时管理器，无需重启即可使用
+	if target.Enabled {
+		if backend, err := factory.Build(factory.TargetSpec{
+			ID:     target.ID,
+			Name:   target.Name,
+			Type:   storage.StorageType(target.Type),
+			Config: target.Config,
+			Log:    h.log,
+		}); err == nil {
+			h.manager.Register(backend)
+		}
+	}
 	return c.Status(201).JSON(fiber.Map{"data": target})
 }
 
@@ -83,6 +96,19 @@ func (h *StorageHandler) Update(c *fiber.Ctx) error {
 		"config":  models.JSON(configJSON),
 	}).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
+	}
+	// 更新后重建并注册后端
+	h.manager.Remove(id)
+	if body.Enabled {
+		if backend, err := factory.Build(factory.TargetSpec{
+			ID:     id,
+			Name:   body.Name,
+			Type:   storage.StorageType(body.Type),
+			Config: configJSON,
+			Log:    h.log,
+		}); err == nil {
+			h.manager.Register(backend)
+		}
 	}
 	return c.JSON(fiber.Map{"message": "updated"})
 }

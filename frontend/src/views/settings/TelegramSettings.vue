@@ -10,7 +10,7 @@ import {
   listAccounts, createAccount, deleteAccount, startAccount, submitCode, submitPassword,
   listChannels, addChannel, removeChannel, toggleChannel, scanChannelHistory,
   listAllChannelFiles,
-  getFileDownloadURL, saveFileToLibrary,
+  saveFileToLibrary,
   type TGBot, type TGAccount, type TGChannel, type TGChannelFile,
 } from '@/api/telegram'
 
@@ -236,18 +236,9 @@ function handlePageChange(page: number) {
 }
 
 async function handleDownloadFile(file: TGChannelFile) {
-  try {
-    const res = await getFileDownloadURL(file.id)
-    const result = (res.data as any)
-    if (result.success) {
-      window.open(result.download_url, '_blank')
-      message.success('开始下载')
-    } else {
-      message.error(result.message || '获取下载链接失败')
-    }
-  } catch {
-    message.error('下载失败')
-  }
+  // 后端直接通过 MTProto 下载并返回文件流
+  window.open(`/api/v1/telegram/channels/files/${file.id}/download`, '_blank')
+  message.success('开始下载')
 }
 
 async function handleSaveFile(file: TGChannelFile) {

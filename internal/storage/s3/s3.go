@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -220,6 +221,87 @@ func (s *S3Storage) ListDir(ctx context.Context, p string) ([]storage.FileInfo, 
 	}
 
 	return files, nil
+}
+
+// Open 打开远程对象流，支持 Range（offset/length）
+func (s *S3Storage) Open(ctx context.Context, p string, offset, length int64) (io.ReadCloser, error) {
+	client, err := s.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	in := &s3.GetObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(s.key(p)),
+	}
+	if offset > 0 || length > 0 {
+		if length > 0 {
+			in.Range = aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
+		} else {
+			in.Range = aws.String(fmt.Sprintf("bytes=%d-", offset))
+		}
+	}
+
+	out, err := client.GetObject(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("s3 get object: %w", err)
+	}
+	return out.Body, nil
+}
+
+// Size 获取远程对象大小
+func (s *S3Storage) Size(ctx context.Context, p string) (int64, error) {
+	client, err := s.client(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	h, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(s.key(p)),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("s3 head object: %w", err)
+	}
+	return aws.ToInt64(h.ContentLength), nil
+}
+
+// Rename 重命名/移动远程对象（S3 通过复制+删除实现）
+func (s *S3Storage) Rename(ctx context.Context, oldPath, newPath string) error {
+	client, err := s.client(ctx)
+	if err != nil {
+		return err
+	}
+
+	srcKey := s.key(oldPath)
+	dstKey := s.key(newPath)
+
+	_, err = client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String(s.cfg.Bucket),
+		Key:        aws.String(dstKey),
+		CopySource: aws.String(s.cfg.Bucket + "/" + encodeS3Key(srcKey)),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 copy: %w", err)
+	}
+
+	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(srcKey),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 delete after copy: %w", err)
+	}
+	return nil
+}
+
+// encodeS3Key 对 S3 key 做 URL 编码（保留路径分隔符）
+func encodeS3Key(key string) string {
+	segs := strings.Split(key, "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segs, "/")
 }
 
 type progressReader struct {

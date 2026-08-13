@@ -208,6 +208,95 @@ func (s *SFTPStorage) ListDir(_ context.Context, p string) ([]storage.FileInfo, 
 	return files, nil
 }
 
+// Open 打开远程文件流，支持 Range（offset/length）。连接生命周期与返回的 ReadCloser 绑定。
+func (s *SFTPStorage) Open(_ context.Context, p string, offset, length int64) (io.ReadCloser, error) {
+	client, sshConn, err := s.connect()
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := client.Open(path.Join(s.basePath, p))
+	if err != nil {
+		client.Close()
+		sshConn.Close()
+		return nil, fmt.Errorf("sftp open: %w", err)
+	}
+
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			f.Close()
+			client.Close()
+			sshConn.Close()
+			return nil, fmt.Errorf("sftp seek: %w", err)
+		}
+	}
+
+	rc := &sftpReadCloser{
+		ReadCloser: f,
+		file:       f,
+		client:     client,
+		sshConn:    sshConn,
+	}
+	if length > 0 {
+		rc.reader = io.LimitReader(f, length)
+	}
+	return rc, nil
+}
+
+// Size 获取远程文件大小
+func (s *SFTPStorage) Size(_ context.Context, p string) (int64, error) {
+	client, sshConn, err := s.connect()
+	if err != nil {
+		return 0, err
+	}
+	defer client.Close()
+	defer sshConn.Close()
+
+	info, err := client.Stat(path.Join(s.basePath, p))
+	if err != nil {
+		return 0, fmt.Errorf("sftp stat: %w", err)
+	}
+	return info.Size(), nil
+}
+
+// Rename 重命名/移动远程文件或目录
+func (s *SFTPStorage) Rename(_ context.Context, oldPath, newPath string) error {
+	client, sshConn, err := s.connect()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	defer sshConn.Close()
+	return client.Rename(path.Join(s.basePath, oldPath), path.Join(s.basePath, newPath))
+}
+
+// sftpReadCloser 与连接生命周期绑定的 SFTP 文件流
+type sftpReadCloser struct {
+	io.ReadCloser
+	file    *sftp.File
+	client  *sftp.Client
+	sshConn *ssh.Client
+	reader  io.Reader
+}
+
+func (s *sftpReadCloser) Read(p []byte) (int, error) {
+	if s.reader != nil {
+		return s.reader.Read(p)
+	}
+	return s.ReadCloser.Read(p)
+}
+
+func (s *sftpReadCloser) Close() error {
+	err := s.ReadCloser.Close()
+	if s.client != nil {
+		s.client.Close()
+	}
+	if s.sshConn != nil {
+		s.sshConn.Close()
+	}
+	return err
+}
+
 type progressReader struct {
 	reader   io.Reader
 	total    int64

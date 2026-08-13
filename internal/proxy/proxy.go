@@ -1,15 +1,18 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/musicflow/musicflow/internal/db/models"
+	"golang.org/x/net/proxy"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -117,6 +120,33 @@ func (m *Manager) Transport() *http.Transport {
 	}
 	m.mu.RUnlock()
 	return t
+}
+
+// Dialer 返回基于代理的 TCP 拨号函数（供 MTProto/gotd 等非 HTTP 协议使用）。
+// 未启用代理时返回 nil。
+func (m *Manager) Dialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	m.mu.RLock()
+	enabled := m.enabled
+	u := m.proxyURL
+	m.mu.RUnlock()
+	if !enabled || u == nil {
+		return nil
+	}
+
+	d, err := proxy.FromURL(u, proxy.Direct)
+	if err != nil {
+		m.log.Warn("build proxy dialer failed", zap.String("url", u.Redacted()), zap.Error(err))
+		return nil
+	}
+
+	if cd, ok := d.(proxy.ContextDialer); ok {
+		return func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return cd.DialContext(ctx, network, addr)
+		}
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return d.Dial(network, addr)
+	}
 }
 
 // GetConfig 获取当前代理配置

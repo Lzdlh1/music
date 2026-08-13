@@ -31,6 +31,11 @@ const menuOptions = computed(() => [
     icon: () => renderIcon('material-symbols:library-music'),
   },
   {
+    label: '网盘',
+    key: '/cloud',
+    icon: () => renderIcon('material-symbols:cloud'),
+  },
+  {
     label: '歌单导入',
     key: '/playlist',
     icon: () => renderIcon('material-symbols:playlist-add'),

@@ -58,6 +58,7 @@ func NewServer(
 				"message": err.Error(),
 			})
 		},
+		BodyLimit: 200 * 1024 * 1024, // 200MB，支持大文件上传
 	})
 
 	s := &Server{
@@ -102,6 +103,11 @@ func (s *Server) setupRoutes() {
 	api.Post("/auth/login", authHandler.Login)
 	api.Get("/auth/status", authHandler.AuthStatus)
 
+	// 云盘流媒体播放（<audio> 无法携带 JWT header，故放在认证中间件之前）
+	cloudHandler := handlers.NewCloudHandler(s.storageMgr, s.db, s.log)
+	api.Get("/storage/:id/stream", cloudHandler.Stream)
+	api.Get("/library/:id/stream", cloudHandler.LibraryStream)
+
 	// JWT 认证中间件
 	api.Use(authmw.AuthMiddleware(&s.cfg.Auth))
 
@@ -132,6 +138,12 @@ func (s *Server) setupRoutes() {
 	api.Post("/storage/:id/test", storageHandler.Test)
 	api.Get("/storage/:id/browse", storageHandler.Browse)
 
+	// 云盘文件管理
+	api.Post("/storage/:id/mkdir", cloudHandler.Mkdir)
+	api.Post("/storage/:id/rename", cloudHandler.Rename)
+	api.Delete("/storage/:id/file", cloudHandler.DeleteFile)
+	api.Post("/storage/:id/upload", cloudHandler.Upload)
+
 	// 音乐源配置
 	sourceHandler := handlers.NewSourceHandler(s.db, s.log)
 	api.Get("/sources", sourceHandler.List)
@@ -153,6 +165,7 @@ func (s *Server) setupRoutes() {
 	libraryHandler := handlers.NewLibraryHandler(s.db, s.log)
 	api.Get("/library", libraryHandler.List)
 	api.Get("/library/:id", libraryHandler.Get)
+	api.Get("/library/:id/lyrics", cloudHandler.LibraryLyrics)
 	api.Delete("/library/:id", libraryHandler.Delete)
 
 	// 歌单导入
@@ -178,7 +191,7 @@ func (s *Server) setupRoutes() {
 	tg.Post("/accounts/:id/password", tgHandler.SubmitPassword)
 
 	// 频道资源
-	channelHandler := handlers.NewChannelHandler(s.channelMgr, s.db, s.log)
+	channelHandler := handlers.NewChannelHandler(s.channelMgr, s.storageMgr, s.db, s.log)
 	tg.Get("/channels", channelHandler.ListChannels)
 	tg.Post("/channels", channelHandler.AddChannel)
 	tg.Delete("/channels/:id", channelHandler.RemoveChannel)
@@ -213,6 +226,7 @@ func (s *Server) setupRoutes() {
 
 	// SPA 回退：前端路由
 	s.app.Get("/*", func(c *fiber.Ctx) error {
+		c.Set("Cache-Control", "no-cache")
 		return c.SendFile("./web/dist/index.html")
 	})
 }

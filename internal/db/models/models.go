@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -181,9 +182,18 @@ type TGChannelFile struct {
 	Downloaded   bool      `json:"downloaded" gorm:"default:false"`
 	PostedAt     time.Time `json:"posted_at"`
 	CreatedAt    time.Time `json:"created_at"`
+	// MTProto 下载所需：document 的 access_hash 与 file_reference（hex 存储）
+	FileAccessHash int64  `json:"file_access_hash" gorm:"default:0"`
+	FileReference  string `json:"file_reference"`
 }
 
 func (TGChannelFile) TableName() string { return "tg_channel_files" }
+
+// FileIDInt 解析 FileID 字符串为 int64（MTProto document id）
+func (f *TGChannelFile) FileIDInt() int64 {
+	id, _ := strconv.ParseInt(f.FileID, 10, 64)
+	return id
+}
 
 func (f *TGChannelFile) BeforeCreate(tx *gorm.DB) error {
 	if f.ID == "" {

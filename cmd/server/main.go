@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -17,10 +16,7 @@ import (
 	"github.com/musicflow/musicflow/internal/scheduler"
 	"github.com/musicflow/musicflow/internal/source"
 	"github.com/musicflow/musicflow/internal/storage"
-	"github.com/musicflow/musicflow/internal/storage/local"
-	s3storage "github.com/musicflow/musicflow/internal/storage/s3"
-	sftpstorage "github.com/musicflow/musicflow/internal/storage/sftp"
-	"github.com/musicflow/musicflow/internal/storage/webdav"
+	"github.com/musicflow/musicflow/internal/storage/factory"
 	"github.com/musicflow/musicflow/internal/telegram"
 	"github.com/musicflow/musicflow/internal/worker"
 	"go.uber.org/zap"
@@ -210,54 +206,18 @@ func loadStorageBackends(database *gorm.DB, mgr *storage.Manager, logger *zap.Lo
 	}
 
 	for _, t := range targets {
-		var cfgMap map[string]interface{}
-		if err := json.Unmarshal(t.Config, &cfgMap); err != nil {
-			logger.Warn("parse storage config", zap.String("id", t.ID), zap.Error(err))
+		backend, err := factory.Build(factory.TargetSpec{
+			ID:     t.ID,
+			Name:   t.Name,
+			Type:   storage.StorageType(t.Type),
+			Config: t.Config,
+			Log:    logger,
+		})
+		if err != nil {
+			logger.Warn("build storage backend", zap.String("id", t.ID), zap.Error(err))
 			continue
 		}
-
-		switch storage.StorageType(t.Type) {
-		case storage.StorageLocal:
-			basePath, _ := cfgMap["base_path"].(string)
-			if basePath == "" {
-				logger.Warn("local storage missing base_path", zap.String("id", t.ID))
-				continue
-			}
-			backend, err := local.New(t.ID, t.Name, basePath)
-			if err != nil {
-				logger.Warn("create local storage", zap.String("id", t.ID), zap.Error(err))
-				continue
-			}
-			mgr.Register(backend)
-
-		case storage.StorageWebDAV:
-			var cfg webdav.Config
-			if err := json.Unmarshal(t.Config, &cfg); err != nil {
-				logger.Warn("parse webdav config", zap.String("id", t.ID), zap.Error(err))
-				continue
-			}
-			mgr.Register(webdav.New(t.ID, t.Name, cfg))
-
-		case storage.StorageSFTP:
-			var cfg sftpstorage.Config
-			if err := json.Unmarshal(t.Config, &cfg); err != nil {
-				logger.Warn("parse sftp config", zap.String("id", t.ID), zap.Error(err))
-				continue
-			}
-			mgr.Register(sftpstorage.New(t.ID, t.Name, cfg))
-
-		case storage.StorageS3:
-			var cfg s3storage.Config
-			if err := json.Unmarshal(t.Config, &cfg); err != nil {
-				logger.Warn("parse s3 config", zap.String("id", t.ID), zap.Error(err))
-				continue
-			}
-			mgr.Register(s3storage.New(t.ID, t.Name, cfg))
-
-		default:
-			logger.Warn("unknown storage type", zap.String("type", t.Type), zap.String("id", t.ID))
-		}
-
+		mgr.Register(backend)
 		logger.Info("loaded storage backend", zap.String("name", t.Name), zap.String("type", t.Type))
 	}
 }

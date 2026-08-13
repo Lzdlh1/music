@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -517,6 +518,59 @@ func (cm *ChannelManager) ScanChannel(chatIdentifier string) (*models.TGChannel,
 	return channel, nil
 }
 
+// HasBotToken 是否已配置 Bot token
+func (cm *ChannelManager) HasBotToken() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.token != ""
+}
+
+// ResolveChannelMTProto 使用 MTProto 账号解析频道（无 Bot 时使用）
+func (cm *ChannelManager) ResolveChannelMTProto(ctx context.Context, identifier string) (*models.TGChannel, error) {
+	clientInst, err := cm.mtMgr.GetClient()
+	if err != nil {
+		return nil, fmt.Errorf("get mtproto client failed: %w", err)
+	}
+
+	username := strings.TrimPrefix(identifier, "@")
+	resolved, err := clientInst.API.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s failed: %w", identifier, err)
+	}
+
+	// 频道/群组
+	for _, chat := range resolved.Chats {
+		if c, ok := chat.(*tg.Channel); ok {
+			return &models.TGChannel{
+				ChatID:   c.ID,
+				Title:    c.Title,
+				Username: "@" + c.Username,
+				Enabled:  true,
+			}, nil
+		}
+	}
+
+	// 用户 / Bot（私聊资源）
+	for _, u := range resolved.Users {
+		if usr, ok := u.(*tg.User); ok {
+			title := usr.Username
+			if title == "" {
+				title = usr.FirstName
+			}
+			if usr.Bot {
+				title = "@" + title
+			}
+			return &models.TGChannel{
+				ChatID:   usr.ID,
+				Title:    title,
+				Username: "@" + usr.Username,
+				Enabled:  true,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("not a valid channel or user")
+}
+
 // getChat 获取聊天信息
 func (cm *ChannelManager) getChat(token, chatID string) (*tgChat, error) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getChat?chat_id=%s", token, chatID)
@@ -714,7 +768,7 @@ func (cm *ChannelManager) ScanChannelHistory(ctx context.Context, channelID stri
 	if err != nil {
 		return fmt.Errorf("resolve channel %s failed: %w", identifier, err)
 	}
-	if len(resolved.Chats) == 0 {
+	if len(resolved.Chats) == 0 && len(resolved.Users) == 0 {
 		return fmt.Errorf("channel not found")
 	}
 
@@ -726,6 +780,18 @@ func (cm *ChannelManager) ScanChannelHistory(ctx context.Context, channelID stri
 				AccessHash: c.AccessHash,
 			}
 			break
+		}
+	}
+	if inputPeer == nil {
+		// 私聊 / Bot 用户
+		for _, u := range resolved.Users {
+			if usr, ok := u.(*tg.User); ok {
+				inputPeer = &tg.InputPeerUser{
+					UserID:     usr.ID,
+					AccessHash: usr.AccessHash,
+				}
+				break
+			}
 		}
 	}
 	if inputPeer == nil {
@@ -810,19 +876,21 @@ func (cm *ChannelManager) ScanChannelHistory(ctx context.Context, channelID stri
 						fileUniqueID := fmt.Sprintf("%d_%d", doc.ID, doc.AccessHash) // 用 ID+AccessHash 作为 UniqueID
 
 						file = &models.TGChannelFile{
-							ChannelID:    channel.ID,
-							ChatID:       channel.ChatID,
-							MessageID:    int64(msg.ID),
-							FileID:       fileID,
-							FileUniqueID: fileUniqueID,
-							FileName:     fileName,
-							FileSize:     doc.Size,
-							MimeType:     doc.MimeType,
-							Duration:     duration,
-							Title:        title,
-							Artist:       performer,
-							Caption:      msg.Message,
-							PostedAt:     time.Unix(int64(msg.Date), 0),
+							ChannelID:      channel.ID,
+							ChatID:         channel.ChatID,
+							MessageID:      int64(msg.ID),
+							FileID:         fileID,
+							FileUniqueID:   fileUniqueID,
+							FileAccessHash: doc.AccessHash,
+							FileReference:  hex.EncodeToString(doc.FileReference),
+							FileName:       fileName,
+							FileSize:       doc.Size,
+							MimeType:       doc.MimeType,
+							Duration:       duration,
+							Title:          title,
+							Artist:         performer,
+							Caption:        msg.Message,
+							PostedAt:       time.Unix(int64(msg.Date), 0),
 						}
 					}
 				}
@@ -847,5 +915,69 @@ func (cm *ChannelManager) ScanChannelHistory(ctx context.Context, channelID stri
 	}
 
 	cm.log.Info("scan channel history completed", zap.String("channel", channel.Title), zap.Int("saved", totalSaved))
+	return nil
+}
+
+// downloadChunkSize MTProto 分块下载的单块大小（1MB）
+const downloadChunkSize = 1 << 20
+
+// DownloadFileMTProto 通过 MTProto 账号（非 Bot token）分块下载文件到本地
+func (cm *ChannelManager) DownloadFileMTProto(ctx context.Context, file *models.TGChannelFile, dest string) error {
+	clientInst, err := cm.mtMgr.GetClient()
+	if err != nil {
+		return fmt.Errorf("get mtproto client failed: %w", err)
+	}
+
+	fileRef, err := hex.DecodeString(file.FileReference)
+	if err != nil {
+		return fmt.Errorf("decode file reference failed: %w", err)
+	}
+
+	location := &tg.InputDocumentFileLocation{
+		ID:            file.FileIDInt(),
+		AccessHash:    file.FileAccessHash,
+		FileReference: fileRef,
+	}
+
+	out, err := os.Create(dest)
+	if err != nil {
+		return fmt.Errorf("create dest file failed: %w", err)
+	}
+	defer out.Close()
+
+	var offset int64
+	for {
+		if offset >= file.FileSize && file.FileSize > 0 {
+			break // 已下载完整文件
+		}
+		req := &tg.UploadGetFileRequest{
+			Location: location,
+			Offset:   offset,
+			Limit:    downloadChunkSize,
+			Precise:  true,
+		}
+		res, err := clientInst.API.UploadGetFile(ctx, req)
+		if err != nil {
+			if strings.Contains(err.Error(), "OFFSET_INVALID") {
+				break // 已到文件末尾
+			}
+			return fmt.Errorf("download chunk at offset %d failed: %w", offset, err)
+		}
+
+		uf, ok := res.(*tg.UploadFile)
+		if !ok {
+			return fmt.Errorf("unexpected upload response type: %T", res)
+		}
+		if len(uf.Bytes) == 0 {
+			break // 下载完成
+		}
+		if _, err := out.Write(uf.Bytes); err != nil {
+			return fmt.Errorf("write chunk failed: %w", err)
+		}
+		offset += int64(len(uf.Bytes))
+	}
+
+	cm.log.Info("mtproto file downloaded",
+		zap.String("file", file.FileName), zap.Int64("size", offset))
 	return nil
 }

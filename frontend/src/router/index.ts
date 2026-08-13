@@ -30,6 +30,11 @@ const router = createRouter({
       component: () => import('@/views/LibraryView.vue'),
     },
     {
+      path: '/cloud',
+      name: 'Cloud',
+      component: () => import('@/views/CloudView.vue'),
+    },
+    {
       path: '/playlist',
       name: 'Playlist',
       component: () => import('@/views/PlaylistView.vue'),

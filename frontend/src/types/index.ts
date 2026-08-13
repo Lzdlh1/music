@@ -122,7 +122,17 @@ export interface TaskStats {
 
 // ========== 存储 ==========
 
-export type StorageType = 'webdav' | 'local' | 'sftp' | 's3' | 'onedrive' | 'aliyun' | 'gdrive'
+export type StorageType =
+  | 'webdav'
+  | 'local'
+  | 'sftp'
+  | 's3'
+  | 'onedrive'
+  | 'aliyun'
+  | 'gdrive'
+  | 'alipan'
+  | 'yun139'
+  | 'tianyi'
 
 export interface StorageTarget {
   id: string
@@ -170,6 +180,39 @@ export interface LibraryItem {
   has_lyrics: boolean
   created_at: string
   updated_at: string
+}
+
+// ========== 播放器 ==========
+
+export interface PlayTrack {
+  id: string
+  title: string
+  artist: string
+  album: string
+  cover_url: string
+  duration: number
+  /** 播放源 URL（库内歌曲为 /api/v1/library/:id/stream） */
+  src: string
+  /** 存储后端 id（网盘文件播放时） */
+  storage_id?: string
+  /** 网盘文件路径（网盘文件播放时） */
+  path?: string
+  /** 是否为网盘文件 */
+  from_cloud?: boolean
+  /** 歌词文本（LRC），可选 */
+  lrc?: string
+}
+
+export type LoopMode = 'off' | 'all' | 'one'
+
+export interface LyricsLine {
+  time: number
+  text: string
+}
+
+export interface EqPreset {
+  name: string
+  gains: number[]
 }
 
 // ========== WebSocket ==========

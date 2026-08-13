@@ -119,6 +119,29 @@ func (w *WebDAVStorage) ListDir(_ context.Context, p string) ([]storage.FileInfo
 	return files, nil
 }
 
+// Open 打开远程文件流，支持 Range（offset/length）
+func (w *WebDAVStorage) Open(_ context.Context, p string, offset, length int64) (io.ReadCloser, error) {
+	full := path.Join(w.basePath, p)
+	if offset <= 0 && length <= 0 {
+		return w.client.ReadStream(full)
+	}
+	return w.client.ReadStreamRange(full, offset, length)
+}
+
+// Size 获取远程文件大小
+func (w *WebDAVStorage) Size(_ context.Context, p string) (int64, error) {
+	info, err := w.client.Stat(path.Join(w.basePath, p))
+	if err != nil {
+		return 0, fmt.Errorf("webdav stat: %w", err)
+	}
+	return info.Size(), nil
+}
+
+// Rename 重命名/移动远程文件或目录
+func (w *WebDAVStorage) Rename(_ context.Context, oldPath, newPath string) error {
+	return w.client.Rename(path.Join(w.basePath, oldPath), path.Join(w.basePath, newPath), true)
+}
+
 type progressReader struct {
 	reader   io.Reader
 	total    int64

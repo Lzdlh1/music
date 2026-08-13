@@ -5,6 +5,7 @@ import { NConfigProvider, NMessageProvider, darkTheme, zhCN, dateZhCN } from 'na
 import { useWSStore } from '@/stores/ws'
 import { useTaskStore } from '@/stores/task'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
+import PlayerBar from '@/components/player/PlayerBar.vue'
 
 const route = useRoute()
 const wsStore = useWSStore()
@@ -22,7 +23,10 @@ onMounted(() => {
   <n-config-provider :locale="zhCN" :date-locale="dateZhCN">
     <n-message-provider>
       <router-view v-if="isLoginPage" />
-      <AppSidebar v-else />
+      <template v-else>
+        <AppSidebar />
+        <PlayerBar />
+      </template>
     </n-message-provider>
   </n-config-provider>
 </template>

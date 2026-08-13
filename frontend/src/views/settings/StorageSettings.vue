@@ -26,9 +26,13 @@ const form = ref({
 
 const typeOptions = [
   { label: '本地存储', value: 'local' },
-  { label: 'WebDAV', value: 'webdav' },
+  { label: 'WebDAV（坚果云/Nextcloud等）', value: 'webdav' },
   { label: 'SFTP', value: 'sftp' },
   { label: 'S3 / MinIO', value: 's3' },
+  { label: '阿里云盘', value: 'alipan' },
+  { label: 'OneDrive', value: 'onedrive' },
+  { label: '中国移动云盘（139）', value: 'yun139' },
+  { label: '天翼云盘', value: 'tianyi' },
 ]
 
 const configFields = computed(() => {
@@ -60,8 +64,46 @@ const configFields = computed(() => {
         { key: 'secret_access_key', label: 'Secret Access Key', type: 'password' },
         { key: 'base_path', label: '基础路径 (可选)', type: 'text' },
       ]
+    case 'alipan':
+      return [
+        { key: 'refresh_token', label: 'Refresh Token', type: 'password' },
+        { key: 'client_id', label: 'Client ID', type: 'text' },
+        { key: 'client_secret', label: 'Client Secret (可选)', type: 'password' },
+        { key: 'root_folder_id', label: '根文件夹ID (可选, 默认root)', type: 'text' },
+        { key: 'drive_id', label: 'Drive ID (可选, 自动获取)', type: 'text' },
+      ]
+    case 'onedrive':
+      return [
+        { key: 'refresh_token', label: 'Refresh Token', type: 'password' },
+        { key: 'client_id', label: 'Client ID', type: 'text' },
+        { key: 'client_secret', label: 'Client Secret (可选)', type: 'password' },
+        { key: 'root_path', label: '挂载子目录 (可选)', type: 'text' },
+      ]
+    case 'yun139':
+      return [
+        { key: 'token', label: 'Token', type: 'textarea' },
+      ]
+    case 'tianyi':
+      return [
+        { key: 'cookie', label: 'Cookie', type: 'textarea' },
+      ]
     default:
       return []
+  }
+})
+
+const typeHints = computed(() => {
+  switch (form.value.type) {
+    case 'alipan':
+      return '在 https://www.alipan.com/developer/ 创建应用获得 Client ID/Secret；Refresh Token 可通过第三方扫码工具获取。'
+    case 'onedrive':
+      return '需在 Azure 门户注册应用并授予 files.readwrite 权限，通过 OAuth 流程获取 Refresh Token。'
+    case 'yun139':
+      return '登录 yun.139.com 后按 F12 打开开发者工具，在 Network 中找到 hcy/file/list 请求，复制请求头 Authorization: Basic 后面的内容填入。有效期约 15 天。'
+    case 'tianyi':
+      return '登录 cloud.189.cn 后，在浏览器开发者工具中复制 Cookie 请求头内容填入。'
+    default:
+      return ''
   }
 })
 
@@ -167,6 +209,7 @@ async function handleTest(id: string) {
         <n-form-item label="类型">
           <n-select v-model:value="form.type" :options="typeOptions" :disabled="editing" />
         </n-form-item>
+        <div v-if="typeHints" class="type-hint">💡 {{ typeHints }}</div>
         <n-form-item label="启用">
           <n-switch v-model:value="form.enabled" />
         </n-form-item>
@@ -212,5 +255,14 @@ h2 { margin-bottom: 16px; }
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.type-hint {
+  font-size: 12px;
+  color: #999;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  line-height: 1.6;
 }
 </style>

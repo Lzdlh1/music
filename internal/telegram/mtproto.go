@@ -10,6 +10,7 @@ import (
 
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/tg"
 	"github.com/musicflow/musicflow/internal/db/models"
 	"github.com/musicflow/musicflow/internal/proxy"
@@ -127,13 +128,13 @@ func (m *MTProtoManager) StartClient(acc *models.TGAccount) (*ClientInstance, er
 		Logger:         m.log.Named("gotd").WithOptions(zap.IncreaseLevel(zap.WarnLevel)), // 减少底层日志
 	}
 
-	// 配置代理
+	// 配置代理：让 MTProto 连接走全局代理（支持 http/socks5）
 	if m.proxyMgr != nil {
-		if transport := m.proxyMgr.Transport(); transport != nil {
-			// gotd 默认使用系统的 Dialer，我们可以通过设置环境变量或自定义 Dialer 来应用代理
-			// 简单起见，如果配置了 HTTP 代理，我们仍然依赖系统环境变量或传入自定义 Dialer。
-			// 因为 gotd 需要基于 TCP 的 Dialer (比如 golang.org/x/net/proxy)，
-			// 为了保持本方案的简洁，这部分先保留默认网络连接，高级 SOCKS5 以后可在 proxy.Manager 补充。
+		if dial := m.proxyMgr.Dialer(); dial != nil {
+			opts.Resolver = dcs.Plain(dcs.PlainOptions{
+				Dial: dcs.DialFunc(dial),
+			})
+			m.log.Info("mtproto client using proxy dialer")
 		}
 	}
 
