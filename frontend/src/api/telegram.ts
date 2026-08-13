@@ -132,3 +132,7 @@ export function saveFileToLibrary(fileId: string) {
 export function scanChannelHistory(id: string) {
   return api.post(`/telegram/channels/${id}/scan`)
 }
+
+export function searchByCommand(channelId: string, query: string) {
+  return api.post(`/telegram/channels/${channelId}/command`, { query })
+}

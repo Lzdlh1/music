@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,5 +283,45 @@ func (h *ChannelHandler) ScanHistory(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"success": true,
 		"message": "开始扫描历史记录，请稍后刷新查看",
+	})
+}
+
+// CommandSearch 通过 Bot 命令搜索歌曲并自动下载（发送歌名 → 选曲 → 点下载 → 等待文件）
+func (h *ChannelHandler) CommandSearch(c *fiber.Ctx) error {
+	channelID := c.Params("id")
+
+	var req struct {
+		Query string `json:"query"`
+	}
+	if err := c.BodyParser(&req); err != nil || strings.TrimSpace(req.Query) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": true, "message": "query is required"})
+	}
+
+	// 免费用户 Bot 下载需要排队等待（实测 3-4 分钟），总预算放宽到 6 分钟
+	ctx, cancel := context.WithTimeout(c.Context(), 6*time.Minute)
+	defer cancel()
+
+	files, err := h.channelMgr.DownloadByCommand(ctx, channelID, strings.TrimSpace(req.Query), 5*time.Minute)
+	if err != nil {
+		return c.JSON(fiber.Map{"success": false, "message": err.Error()})
+	}
+
+	infos := make([]fiber.Map, 0, len(files))
+	for _, f := range files {
+		infos = append(infos, fiber.Map{
+			"id":        f.ID,
+			"title":     f.Title,
+			"artist":    f.Artist,
+			"file_name": f.FileName,
+			"file_size": f.FileSize,
+			"duration":  f.Duration,
+			"mime_type": f.MimeType,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": fmt.Sprintf("获取到 %d 个文件", len(infos)),
+		"files":   infos,
 	})
 }

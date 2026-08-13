@@ -207,6 +207,7 @@ func (s *Server) setupRoutes() {
 	tg.Put("/channels/:id/toggle", channelHandler.ToggleChannel)
 	tg.Get("/channels/:id/files", channelHandler.ListFiles)
 	tg.Post("/channels/:id/scan", channelHandler.ScanHistory)
+	tg.Post("/channels/:id/command", channelHandler.CommandSearch)
 	tg.Get("/channels/files", channelHandler.ListAllFiles)
 	tg.Get("/channels/files/:fileId/download", channelHandler.GetFileDownloadURL)
 	tg.Post("/channels/files/:fileId/save", channelHandler.DownloadToLibrary)

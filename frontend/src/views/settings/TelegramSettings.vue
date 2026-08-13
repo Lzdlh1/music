@@ -3,14 +3,14 @@ import { ref, onMounted, computed } from 'vue'
 import {
   NCard, NButton, NSpace, NInput, NFormItem, NForm,
   NTabs, NTabPane, NTag, NSwitch, NPagination, NEmpty,
-  NInputGroup, NModal, useMessage
+  NInputGroup, NModal, NSelect, useMessage
 } from 'naive-ui'
 import {
   listBots, createBot, deleteBot, testBotToken,
   listAccounts, createAccount, deleteAccount, startAccount, submitCode, submitPassword,
   listChannels, addChannel, removeChannel, toggleChannel, scanChannelHistory,
   listAllChannelFiles,
-  saveFileToLibrary,
+  saveFileToLibrary, searchByCommand,
   type TGBot, type TGAccount, type TGChannel, type TGChannelFile,
 } from '@/api/telegram'
 
@@ -33,6 +33,8 @@ const privateFilesLoading = ref(false)
 const botForm = ref({ name: '', username: '', token: '' })
 const accountForm = ref({ phone: '' })
 const channelForm = ref({ chatId: '' })
+const searchForm = ref({ channelId: '', query: '' })
+const searching = ref(false)
 
 // 登录验证码/密码相关
 const authCodeForm = ref({ id: '', code: '' })
@@ -209,6 +211,37 @@ async function handleScanHistory(id: string) {
   }
 }
 
+// === Bot 命令搜索 ===
+async function handleCommandSearch() {
+  const channelId = searchForm.value.channelId
+  const query = searchForm.value.query.trim()
+  if (!channelId) {
+    message.warning('请选择要使用的 Bot')
+    return
+  }
+  if (!query) {
+    message.warning('请输入歌名')
+    return
+  }
+  searching.value = true
+  try {
+    const res = await searchByCommand(channelId, query)
+    const result = res.data as any
+    if (result.success) {
+      message.success(`获取到 ${(result.files || []).length} 个文件`)
+      searchForm.value.query = ''
+      // 文件已入库，刷新文件列表
+      await Promise.all([loadFiles(), loadChannels()])
+    } else {
+      message.error(result.message || '搜索失败')
+    }
+  } catch {
+    message.error('搜索请求失败，请稍后重试')
+  } finally {
+    searching.value = false
+  }
+}
+
 // === 频道文件浏览 ===
 async function loadFiles() {
   filesLoading.value = true
@@ -367,6 +400,37 @@ const hasBots = computed(() => bots.value.length > 0)
             </n-form>
             <div style="font-size: 12px; color: #999; margin-top: -8px;">
               Bot 必须是频道管理员。添加后系统会自动抓取频道中的音频文件。
+            </div>
+          </n-card>
+
+          <!-- Bot 命令搜索 -->
+          <n-card title="Bot 命令搜索（下载指定歌曲）" size="small" style="margin-top: 12px;">
+            <n-form label-placement="left" label-width="120">
+              <n-form-item label="使用 Bot">
+                <n-select
+                  v-model:value="searchForm.channelId"
+                  :options="channels.map(c => ({ label: c.title + ' (' + c.chat_id + ')', value: c.id }))"
+                  placeholder="选择已添加的 Bot / 频道"
+                  clearable
+                />
+              </n-form-item>
+              <n-form-item label="歌名">
+                <n-input-group>
+                  <n-input
+                    v-model:value="searchForm.query"
+                    placeholder="输入歌名，如：凄美地"
+                    :disabled="searching"
+                    @keyup.enter="handleCommandSearch"
+                  />
+                  <n-button type="primary" :loading="searching" :disabled="searching" @click="handleCommandSearch">
+                    {{ searching ? 'Bot 下载中（约1-3分钟）…' : '搜索下载' }}
+                  </n-button>
+                </n-input-group>
+              </n-form-item>
+            </n-form>
+            <div style="font-size: 12px; color: #999; margin-top: -8px;">
+              通过 MTProto 账号向 Bot 发送歌名命令，自动选择原版曲目并点击下载，Bot 返回文件后自动入库。
+              免费用户下载需排队等待约 1-3 分钟，请耐心等待。
             </div>
           </n-card>
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -980,4 +981,462 @@ func (cm *ChannelManager) DownloadFileMTProto(ctx context.Context, file *models.
 	cm.log.Info("mtproto file downloaded",
 		zap.String("file", file.FileName), zap.Int64("size", offset))
 	return nil
+}
+
+// DownloadByCommand 向 Bot 发送搜索命令，自动选择匹配的曲目并点击下载按钮，
+// 等待 Bot 返回音频文件后入库。适用于不支持/未配置 Bot token 的场景。
+func (cm *ChannelManager) DownloadByCommand(ctx context.Context, channelID, query string, waitTimeout time.Duration) ([]*models.TGChannelFile, error) {
+	var channel models.TGChannel
+	if err := cm.db.Where("id = ?", channelID).First(&channel).Error; err != nil {
+		return nil, fmt.Errorf("channel not found: %w", err)
+	}
+
+	clientInst, err := cm.mtMgr.GetClient()
+	if err != nil {
+		return nil, fmt.Errorf("get mtproto client failed: %w", err)
+	}
+
+	peer, err := cm.resolvePeer(ctx, clientInst.API, &channel)
+	if err != nil {
+		return nil, err
+	}
+
+	// 记录发送命令前的最新消息 id，之后只处理新消息
+	baseline, err := cm.peerTopMessageID(ctx, clientInst.API, peer)
+	if err != nil {
+		return nil, err
+	}
+
+	// 发送搜索命令（直接发歌名）
+	if _, err := clientInst.API.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:     peer,
+		Message:  query,
+		RandomID: time.Now().UnixNano(),
+	}); err != nil {
+		return nil, fmt.Errorf("send command failed: %w", err)
+	}
+	cm.log.Info("bot command sent", zap.String("channel", channel.Title), zap.String("query", query))
+
+	ctx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
+	// 1. 等待搜索结果，选择匹配的曲目按钮
+	tackData, tackMsgID, err := cm.waitForSearchResult(ctx, clientInst.API, peer, baseline, query)
+	if err != nil {
+		return nil, err
+	}
+	cm.log.Info("track selected", zap.String("data", tackData), zap.Int("msg_id", tackMsgID))
+
+	if err := cm.clickCallback(ctx, clientInst.API, peer, tackMsgID, tackData); err != nil {
+		return nil, fmt.Errorf("select track failed: %w", err)
+	}
+
+	// 2. 等待详情卡片，触发 Download Track
+	dlData, dlMsgID, err := cm.waitForDownloadButton(ctx, clientInst.API, peer, baseline)
+	if err != nil {
+		return nil, err
+	}
+	cm.log.Info("download triggered", zap.String("data", dlData), zap.Int("msg_id", dlMsgID))
+
+	if err := cm.clickCallback(ctx, clientInst.API, peer, dlMsgID, dlData); err != nil {
+		return nil, fmt.Errorf("trigger download failed: %w", err)
+	}
+
+	// 3. 等待 Bot 返回音频文件并入库
+	files, err := cm.waitForAudioFiles(ctx, clientInst.API, peer, baseline, &channel, dlData, dlMsgID)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("等待下载超时，未获取到音频文件（免费用户下载可能需要 1-3 分钟）")
+	}
+	return files, nil
+}
+
+// resolvePeer 解析频道的 MTProto peer（频道或用户/Bot）
+func (cm *ChannelManager) resolvePeer(ctx context.Context, api *tg.Client, channel *models.TGChannel) (tg.InputPeerClass, error) {
+	identifier := channel.Username
+	if identifier == "" {
+		identifier = fmt.Sprintf("%d", channel.ChatID)
+	} else if !strings.HasPrefix(identifier, "@") {
+		identifier = "@" + identifier
+	}
+
+	resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: strings.TrimPrefix(identifier, "@")})
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s failed: %w", identifier, err)
+	}
+	for _, chat := range resolved.Chats {
+		if c, ok := chat.(*tg.Channel); ok {
+			return &tg.InputPeerChannel{ChannelID: c.ID, AccessHash: c.AccessHash}, nil
+		}
+	}
+	for _, u := range resolved.Users {
+		if usr, ok := u.(*tg.User); ok {
+			return &tg.InputPeerUser{UserID: usr.ID, AccessHash: usr.AccessHash}, nil
+		}
+	}
+	return nil, fmt.Errorf("not a valid channel or user")
+}
+
+// peerTopMessageID 获取对话中最新一条消息的 id
+func (cm *ChannelManager) peerTopMessageID(ctx context.Context, api *tg.Client, peer tg.InputPeerClass) (int, error) {
+	msgs, err := cm.getLatestMessages(ctx, api, peer, 1)
+	if err != nil {
+		return 0, err
+	}
+	if len(msgs) > 0 {
+		return msgs[0].ID, nil
+	}
+	return 0, nil
+}
+
+// getLatestMessages 拉取对话最新的 N 条消息
+func (cm *ChannelManager) getLatestMessages(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, limit int) ([]*tg.Message, error) {
+	res, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+		Peer:     peer,
+		Limit:    limit,
+		OffsetID: 0,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var out []*tg.Message
+	switch r := res.(type) {
+	case *tg.MessagesMessages:
+		for _, m := range r.Messages {
+			if mm, ok := m.(*tg.Message); ok {
+				out = append(out, mm)
+			}
+		}
+	case *tg.MessagesMessagesSlice:
+		for _, m := range r.Messages {
+			if mm, ok := m.(*tg.Message); ok {
+				out = append(out, mm)
+			}
+		}
+	case *tg.MessagesChannelMessages:
+		for _, m := range r.Messages {
+			if mm, ok := m.(*tg.Message); ok {
+				out = append(out, mm)
+			}
+		}
+	}
+	return out, nil
+}
+
+// callbackButtons 提取消息中的内联 callback 按钮（data -> text）
+func callbackButtons(msg *tg.Message) map[string]string {
+	btns := map[string]string{}
+	if msg == nil || msg.ReplyMarkup == nil {
+		return btns
+	}
+	im, ok := msg.ReplyMarkup.(*tg.ReplyInlineMarkup)
+	if !ok {
+		return btns
+	}
+	for _, row := range im.Rows {
+		for _, b := range row.Buttons {
+			if cb, ok := b.(*tg.KeyboardButtonCallback); ok {
+				btns[string(cb.Data)] = cb.Text
+			}
+		}
+	}
+	return btns
+}
+
+// stripEmoji 粗略移除按钮文本中的 emoji（非 BMP 字符）
+func stripEmoji(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= 0x1F000 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// waitForSearchResult 轮询搜索结果，返回匹配 query 的曲目按钮（tack_*）
+// 优先级：标题精确匹配 query 且非 Live/Remix 变体 > 包含 query 且非变体 > 第一个 tack_track
+func (cm *ChannelManager) waitForSearchResult(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, baseline int, query string) (string, int, error) {
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	for {
+		select {
+		case <-ctx.Done():
+			return "", 0, fmt.Errorf("等待搜索结果超时: %w", ctx.Err())
+		default:
+		}
+
+		msgs, err := cm.getLatestMessages(ctx, api, peer, 30)
+		if err != nil {
+			return "", 0, err
+		}
+		for _, m := range msgs {
+			if m.ID <= baseline {
+				continue
+			}
+			btns := callbackButtons(m)
+			var fallback string
+			var containsExact string
+			for data, text := range btns {
+				if !strings.HasPrefix(data, "tack_") {
+					continue
+				}
+				if strings.HasSuffix(data, "_track") && fallback == "" {
+					fallback = data
+				}
+				// 变体检测基于完整按钮文本（"凄美地 - Live" 含 Live）
+				clean := stripEmoji(text)
+				if isTrackVariant(clean) {
+					continue
+				}
+				title := extractTitle(clean)
+				titleLower := strings.ToLower(title)
+				if titleLower == queryLower {
+					return data, m.ID, nil
+				}
+				if containsExact == "" && titleLower != "" && queryLower != "" &&
+					strings.Contains(titleLower, queryLower) {
+					containsExact = data
+				}
+			}
+			if containsExact != "" {
+				return containsExact, m.ID, nil
+			}
+			if fallback != "" {
+				return fallback, m.ID, nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", 0, fmt.Errorf("等待搜索结果超时: %w", ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// extractTitle 从按钮文本中提取歌曲标题（去掉 emoji 与 " - 歌手" 部分）
+func extractTitle(btnText string) string {
+	s := stripEmoji(btnText)
+	if i := strings.Index(s, " - "); i > 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// isTrackVariant 判断是否为 Live/Remix/翻唱等变体版本
+func isTrackVariant(title string) bool {
+	t := strings.ToLower(title)
+	for _, kw := range []string{"live", "remix", "version", "伴奏", "翻唱", "cover", "instrumental", "mv", "音乐剧"} {
+		if strings.Contains(t, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForDownloadButton 轮询详情卡片中的 Download Track 按钮
+func (cm *ChannelManager) waitForDownloadButton(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, baseline int) (string, int, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return "", 0, fmt.Errorf("等待下载按钮超时: %w", ctx.Err())
+		default:
+		}
+
+		msgs, err := cm.getLatestMessages(ctx, api, peer, 30)
+		if err != nil {
+			return "", 0, err
+		}
+		for _, m := range msgs {
+			if m.ID <= baseline {
+				continue
+			}
+			btns := callbackButtons(m)
+			for data := range btns {
+				if strings.HasPrefix(data, "download_") && strings.HasSuffix(data, "_track") {
+					return data, m.ID, nil
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", 0, fmt.Errorf("等待下载按钮超时: %w", ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// clickCallback 点击指定消息上的 callback 按钮。
+// Bot 可能未在超时内应答（BOT_RESPONSE_TIMEOUT），但回调实际已触发、Bot 端仍在处理，
+// 因此忽略该错误继续等待后续消息。
+func (cm *ChannelManager) clickCallback(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, msgID int, data string) error {
+	_, err := api.MessagesGetBotCallbackAnswer(ctx, &tg.MessagesGetBotCallbackAnswerRequest{
+		Peer:  peer,
+		MsgID: msgID,
+		Data:  []byte(data),
+	})
+	if err != nil && strings.Contains(err.Error(), "BOT_RESPONSE_TIMEOUT") {
+		cm.log.Warn("bot callback answer timeout, assuming triggered",
+			zap.String("data", data), zap.Error(err))
+		return nil
+	}
+	return err
+}
+
+var waitSecondsRe = regexp.MustCompile(`(?i)please\s+wait\s+(\d+)\s+seconds`)
+
+// parseWaitSeconds 从限流提示文本中解析需要等待的秒数
+func parseWaitSeconds(text string) int {
+	m := waitSecondsRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// waitForAudioFiles 轮询等待 Bot 返回的音频文件并入库。
+// 若 Bot 触发限流（"please wait N seconds"），等待 N 秒后自动重新触发下载按钮。
+func (cm *ChannelManager) waitForAudioFiles(ctx context.Context, api *tg.Client, peer tg.InputPeerClass, baseline int, channel *models.TGChannel, dlData string, dlMsgID int) ([]*models.TGChannelFile, error) {
+	var files []*models.TGChannelFile
+	idleRounds := 0
+	rateLimited := false
+	seen := map[int]bool{} // 已处理的消息，避免同一文件重复返回
+	for {
+		select {
+		case <-ctx.Done():
+			return files, nil
+		default:
+		}
+
+		msgs, err := cm.getLatestMessages(ctx, api, peer, 30)
+		if err != nil {
+			return files, err
+		}
+
+		// 限流处理：Bot 要求等待 N 秒，等待后重新点击下载按钮
+		if !rateLimited {
+			for _, m := range msgs {
+				if m.ID <= baseline || seen[m.ID] {
+					continue
+				}
+				if sec := parseWaitSeconds(m.Message); sec > 0 {
+					cm.log.Info("bot rate limited, waiting then retry download", zap.Int("seconds", sec))
+					select {
+					case <-ctx.Done():
+						return files, nil
+					case <-time.After(time.Duration(sec+3) * time.Second):
+					}
+					if err := cm.clickCallback(ctx, api, peer, dlMsgID, dlData); err != nil {
+						cm.log.Warn("retry download click failed", zap.Error(err))
+					}
+					rateLimited = true
+					break
+				}
+			}
+		}
+
+		newFound := false
+		for _, m := range msgs {
+			if m.ID <= baseline || m.Media == nil || seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			docMedia, ok := m.Media.(*tg.MessageMediaDocument)
+			if !ok {
+				continue
+			}
+			doc, ok := docMedia.Document.(*tg.Document)
+			if !ok {
+				continue
+			}
+
+			fileName := ""
+			isAudio := isAudioMime(doc.MimeType)
+			for _, attr := range doc.Attributes {
+				if a, ok := attr.(*tg.DocumentAttributeFilename); ok {
+					fileName = a.FileName
+					if isAudioExt(fileName) {
+						isAudio = true
+					}
+				}
+			}
+			if !isAudio {
+				continue
+			}
+
+			file := cm.buildTGFile(channel, m, doc)
+			var existing int64
+			cm.db.Model(&models.TGChannelFile{}).Where("file_unique_id = ?", file.FileUniqueID).Count(&existing)
+			if existing == 0 {
+				if err := cm.db.Create(file).Error; err == nil {
+					cm.db.Model(&models.TGChannel{}).Where("id = ?", channel.ID).
+						Update("file_count", gorm.Expr("file_count + 1"))
+				}
+			}
+			files = append(files, file)
+			newFound = true
+		}
+
+		if newFound {
+			idleRounds = 0
+		} else {
+			idleRounds++
+			if idleRounds >= 3 && len(files) > 0 {
+				break // 已有文件且连续无新文件，认为下载完成
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return files, nil
+		case <-time.After(3 * time.Second):
+		}
+	}
+	return files, nil
+}
+
+// buildTGFile 从 document 构造频道文件记录
+func (cm *ChannelManager) buildTGFile(channel *models.TGChannel, msg *tg.Message, doc *tg.Document) *models.TGChannelFile {
+	var fileName, title, performer string
+	var duration int
+	for _, attr := range doc.Attributes {
+		switch a := attr.(type) {
+		case *tg.DocumentAttributeFilename:
+			fileName = a.FileName
+		case *tg.DocumentAttributeAudio:
+			title = a.Title
+			performer = a.Performer
+			duration = a.Duration
+		}
+	}
+	if title == "" {
+		title = parseFilenameTitle(fileName)
+	}
+	if performer == "" {
+		performer = parseFilenameArtist(fileName)
+	}
+
+	return &models.TGChannelFile{
+		ChannelID:      channel.ID,
+		ChatID:         channel.ChatID,
+		MessageID:      int64(msg.ID),
+		FileID:         fmt.Sprintf("%d", doc.ID),
+		FileUniqueID:   fmt.Sprintf("%d_%d", doc.ID, doc.AccessHash),
+		FileAccessHash: doc.AccessHash,
+		FileReference:  hex.EncodeToString(doc.FileReference),
+		FileName:       fileName,
+		FileSize:       doc.Size,
+		MimeType:       doc.MimeType,
+		Duration:       duration,
+		Title:          title,
+		Artist:         performer,
+		Caption:        msg.Message,
+		PostedAt:       time.Unix(int64(msg.Date), 0),
+	}
 }
