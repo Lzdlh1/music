@@ -89,13 +89,9 @@ func pathParam(c *fiber.Ctx, key string) string {
 func (h *SearchHandler) GetLyrics(c *fiber.Ctx) error {
 	id := pathParam(c, "id")
 
-	// 先尝试从音乐源获取
-	sources := h.aggregator.Sources()
-	for _, src := range sources {
-		lyrics, err := src.GetLyrics(c.Context(), id)
-		if err == nil && lyrics != nil && lyrics.LRC != "" {
-			return c.JSON(fiber.Map{"data": lyrics})
-		}
+	// 优先按源匹配（聚合器内按 ID 前缀精确匹配）
+	if lyrics, err := h.aggregator.GetLyrics(c.Context(), id); err == nil && lyrics != nil && lyrics.LRC != "" {
+		return c.JSON(fiber.Map{"data": lyrics})
 	}
 
 	// 降级：通过 LRClib 搜索（需要歌曲信息）
@@ -119,15 +115,12 @@ func (h *SearchHandler) GetLyrics(c *fiber.Ctx) error {
 func (h *SearchHandler) GetCover(c *fiber.Ctx) error {
 	id := pathParam(c, "id")
 
-	sources := h.aggregator.Sources()
-	for _, src := range sources {
-		cover, err := src.GetCover(c.Context(), id)
-		if err == nil && cover != nil && cover.URL != "" {
-			return c.JSON(fiber.Map{"data": fiber.Map{
-				"url":    cover.URL,
-				"source": cover.Source,
-			}})
-		}
+	// 优先按源匹配（聚合器内按 ID 前缀精确匹配）
+	if cover, err := h.aggregator.GetCover(c.Context(), id); err == nil && cover != nil && cover.URL != "" {
+		return c.JSON(fiber.Map{"data": fiber.Map{
+			"url":    cover.URL,
+			"source": cover.Source,
+		}})
 	}
 
 	return c.JSON(fiber.Map{"data": nil, "message": "cover not found"})

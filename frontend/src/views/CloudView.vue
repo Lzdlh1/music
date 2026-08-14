@@ -196,6 +196,17 @@ async function fetchLrcFor(audioName: string): Promise<string> {
   }
 }
 
+/** 读取同目录 cover.jpg 作为封面 */
+function fetchCoverFor(audioName: string): string {
+  const base = audioName.replace(/\.[^.]+$/, '')
+  const cover = files.value.find(
+    (f) => !f.is_dir && /^cover\.(jpg|jpeg|png)$/i.test(f.name)
+  ) || files.value.find(
+    (f) => !f.is_dir && /\.(jpg|jpeg|png)$/i.test(f.name) && f.name.replace(/\.[^.]+$/, '') === base
+  )
+  return cover ? storageStreamUrl(storageId.value, cover.path) : ''
+}
+
 /** 播放：以当前目录所有音频为队列 */
 async function playAudio(f: FileInfo) {
   if (!storageId.value) return
@@ -205,7 +216,7 @@ async function playAudio(f: FileInfo) {
     title: af.name.replace(/\.[^.]+$/, ''),
     artist: '',
     album: currentPath.value,
-    cover_url: '',
+    cover_url: af.path === f.path ? fetchCoverFor(af.name) : '',
     duration: 0,
     src: storageStreamUrl(storageId.value, af.path),
     storage_id: storageId.value,

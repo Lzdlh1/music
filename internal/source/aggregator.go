@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -148,4 +149,48 @@ func (a *Aggregator) GetTrackSources(ctx context.Context, trackID string, qualit
 	})
 
 	return available, nil
+}
+
+// GetLyrics 按曲目 ID 从对应源获取歌词（ID 格式为 "源名:rawID"）
+func (a *Aggregator) GetLyrics(ctx context.Context, trackID string) (*LyricsResult, error) {
+	sources := a.Sources()
+	// 优先按源名前缀匹配，找不到则遍历所有源尝试
+	if name, _ := splitSourceID(trackID); name != "" {
+		for _, s := range sources {
+			if s.Name() == name {
+				if lyr, err := s.GetLyrics(ctx, trackID); err == nil && lyr != nil && lyr.LRC != "" {
+					return lyr, nil
+				}
+				break
+			}
+		}
+	}
+	for _, s := range sources {
+		if lyr, err := s.GetLyrics(ctx, trackID); err == nil && lyr != nil && lyr.LRC != "" {
+			return lyr, nil
+		}
+	}
+	return nil, fmt.Errorf("no lyrics found for track %s", trackID)
+}
+
+// GetCover 按曲目 ID 从对应源获取封面
+func (a *Aggregator) GetCover(ctx context.Context, trackID string) (*CoverResult, error) {
+	sources := a.Sources()
+	if name, _ := splitSourceID(trackID); name != "" {
+		for _, s := range sources {
+			if s.Name() == name {
+				if cv, err := s.GetCover(ctx, trackID); err == nil && cv != nil && cv.URL != "" {
+					return cv, nil
+				}
+				a.log.Info("cover source matched but failed", zap.String("source", s.Name()), zap.String("track", trackID))
+				break
+			}
+		}
+	}
+	for _, s := range sources {
+		if cv, err := s.GetCover(ctx, trackID); err == nil && cv != nil && cv.URL != "" {
+			return cv, nil
+		}
+	}
+	return nil, fmt.Errorf("no cover found for track %s", trackID)
 }

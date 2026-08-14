@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -87,6 +88,22 @@ func (t *metingTrack) IDString() string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+// stripPicSuffix 剥离 ID 末尾附加的 #picID 部分，返回真实 track id
+func stripPicSuffix(rawID string) string {
+	if i := strings.Index(rawID, "#"); i >= 0 {
+		return rawID[:i]
+	}
+	return rawID
+}
+
+// picIDFrom 从 ID 中提取封面 ID（# 之后的部分），无则返回整个 rawID
+func picIDFrom(rawID string) string {
+	if i := strings.Index(rawID, "#"); i >= 0 {
+		return rawID[i+1:]
+	}
+	return rawID
 }
 
 func (t *metingTrack) ArtistString() string {
@@ -209,8 +226,13 @@ func (s *MetingSource) Search(ctx context.Context, query SearchQuery) ([]TrackRe
 		searchQuality = Quality320
 	}
 	for _, t := range tracks {
+		// 封面 ID 一并编码进曲目 ID，便于后续 GetCover 直接使用（pic_id 与 track_id 可能不同）
+		compositeID := s.name + ":" + t.IDString()
+		if t.PicID != "" {
+			compositeID += "#" + t.PicID
+		}
 		results = append(results, TrackResult{
-			ID:       s.name + ":" + t.IDString(),
+			ID:       compositeID,
 			Title:    t.Name,
 			Artist:   t.ArtistString(),
 			Album:    t.Album,
@@ -231,13 +253,14 @@ func (s *MetingSource) GetTrackDetail(ctx context.Context, id string) (*TrackDet
 	_, rawID := splitSourceID(id)
 	return &TrackDetail{
 		ID:     id,
-		Title:  "Track " + rawID,
+		Title:  "Track " + stripPicSuffix(rawID),
 		Source: s.name,
 	}, nil
 }
 
 func (s *MetingSource) GetDownloadURL(ctx context.Context, id string, quality Quality) (*DownloadURL, error) {
 	_, rawID := splitSourceID(id)
+	rawID = stripPicSuffix(rawID)
 	params := url.Values{}
 	params.Set("types", "url")
 	params.Set("source", s.musicSource)
@@ -313,6 +336,7 @@ func (s *MetingSource) GetDownloadURL(ctx context.Context, id string, quality Qu
 
 func (s *MetingSource) GetLyrics(ctx context.Context, id string) (*LyricsResult, error) {
 	_, rawID := splitSourceID(id)
+	rawID = stripPicSuffix(rawID)
 	params := url.Values{}
 	params.Set("types", "lyric")
 	params.Set("source", s.musicSource)
@@ -337,10 +361,21 @@ func (s *MetingSource) GetLyrics(ctx context.Context, id string) (*LyricsResult,
 
 func (s *MetingSource) GetCover(ctx context.Context, id string) (*CoverResult, error) {
 	_, rawID := splitSourceID(id)
+	// 优先使用编码进 ID 的 pic_id；无 # 后缀时即 track id
+	picID := picIDFrom(rawID)
+
+	// 部分源（如 bilibili）的 pic_id 本身就是完整 URL（可能以 // 开头）
+	if strings.HasPrefix(picID, "http://") || strings.HasPrefix(picID, "https://") {
+		return &CoverResult{URL: picID, Source: s.name}, nil
+	}
+	if strings.HasPrefix(picID, "//") {
+		return &CoverResult{URL: "https:" + picID, Source: s.name}, nil
+	}
+
 	params := url.Values{}
 	params.Set("types", "pic")
 	params.Set("source", s.musicSource)
-	params.Set("id", rawID)
+	params.Set("id", picID)
 	params.Set("size", "500")
 
 	body, err := s.doGet(ctx, params)

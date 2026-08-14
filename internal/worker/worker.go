@@ -81,8 +81,50 @@ func New(
 	}
 }
 
+// loadSettings 从数据库 settings 表加载用户偏好（命名模板、下载偏好），覆盖 config 默认值
+func (w *Worker) loadSettings() {
+	// 命名模板
+	var naming models.Setting
+	if err := w.db.First(&naming, "key = ?", "naming").Error; err == nil {
+		var data struct {
+			Template string `json:"template"`
+		}
+		if err := json.Unmarshal(naming.Value, &data); err == nil && data.Template != "" {
+			w.cfg.Naming.Template = data.Template
+		}
+	}
+
+	// 下载偏好
+	var dl models.Setting
+	if err := w.db.First(&dl, "key = ?", "download").Error; err == nil {
+		var data struct {
+			DefaultQuality string `json:"default_quality"`
+			EmbedCover     *bool  `json:"embed_cover"`
+			EmbedLyrics    *bool  `json:"embed_lyrics"`
+			SaveLrcFile    *bool  `json:"save_lrc_file"`
+		}
+		if err := json.Unmarshal(dl.Value, &data); err == nil {
+			if data.DefaultQuality != "" {
+				w.cfg.Download.DefaultQuality = data.DefaultQuality
+			}
+			if data.EmbedCover != nil {
+				w.cfg.Download.EmbedCover = *data.EmbedCover
+			}
+			if data.EmbedLyrics != nil {
+				w.cfg.Download.EmbedLyrics = *data.EmbedLyrics
+			}
+			if data.SaveLrcFile != nil {
+				w.cfg.Download.SaveLrcFile = *data.SaveLrcFile
+			}
+		}
+	}
+}
+
 // Execute 任务执行主函数，由 scheduler 调用
 func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func(status string, progress scheduler.TaskProgress)) error {
+	// 0. 从数据库加载用户偏好设置（覆盖 config.yaml）
+	w.loadSettings()
+
 	// 1. 解析任务信息
 	var trackInfo taskTrackInfo
 	if err := json.Unmarshal([]byte(task.TrackInfo), &trackInfo); err != nil {
@@ -183,7 +225,13 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 		Genre:       trackInfo.Genre,
 	}
 
-	// 下载封面
+	// 下载封面（封面 URL 缺失时尝试从音乐源获取）
+	if trackInfo.CoverURL == "" && trackInfo.ID != "" {
+		if cv, err := w.aggregator.GetCover(ctx, trackInfo.ID); err == nil && cv != nil && cv.URL != "" {
+			trackInfo.CoverURL = cv.URL
+		}
+	}
+	var coverPath string
 	if w.cfg.Download.EmbedCover && trackInfo.CoverURL != "" {
 		coverOutput, err := w.coverProc.ProcessCover(ctx, trackInfo.CoverURL, tempDir)
 		if err != nil {
@@ -193,6 +241,8 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 			if dlErr == nil {
 				tagInfo.CoverData = coverData
 				tagInfo.CoverMIME = "image/jpeg"
+				coverPath = filepath.Join(tempDir, task.ID+"_cover.jpg")
+				_ = os.WriteFile(coverPath, coverData, 0644)
 			}
 		} else {
 			if len(coverOutput.EmbedData) > 0 {
@@ -201,21 +251,42 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 				tagInfo.CoverData = coverOutput.OriginalData
 			}
 			tagInfo.CoverMIME = "image/jpeg"
+			// 优先用 300px 的目录封面（cover_folder.jpg），否则用原图
+			coverPath = coverOutput.FolderPath
+			if coverPath == "" {
+				coverPath = coverOutput.OriginalPath
+			}
 		}
 	}
 
 	onProgress(scheduler.StatusProcessing, scheduler.TaskProgress{Stage: "processing_lyrics", Percent: 70})
 
-	// 获取歌词
+	// 获取歌词：优先从音乐源（GD API lyric 接口），失败再回退 LRClib
+	lrcContent := ""
 	if w.cfg.Download.EmbedLyrics || w.cfg.Download.SaveLrcFile {
-		lyrics, err := w.lyricsMgr.FetchLyrics(ctx, trackInfo.Title, trackInfo.Artist)
-		if err != nil {
-			w.log.Warn("fetch lyrics failed", zap.Error(err))
-		} else if lyrics != nil {
+		var lyrics *metadata.LyricsData
+		if trackInfo.ID != "" {
+			if srcLyr, err := w.aggregator.GetLyrics(ctx, trackInfo.ID); err == nil && srcLyr != nil && srcLyr.LRC != "" {
+				lyrics = &metadata.LyricsData{
+					LRC:      srcLyr.LRC,
+					TransLRC: srcLyr.TransLRC,
+					Source:   srcLyr.Source,
+				}
+			}
+		}
+		if lyrics == nil || lyrics.LRC == "" {
+			if lrcl, err := w.lyricsMgr.FetchLyrics(ctx, trackInfo.Title, trackInfo.Artist); err == nil {
+				lyrics = lrcl
+			} else {
+				w.log.Warn("fetch lyrics failed", zap.Error(err))
+			}
+		}
+		if lyrics != nil && lyrics.LRC != "" {
+			lrcContent = lyrics.LRC
 			if w.cfg.Download.EmbedLyrics {
 				tagInfo.Lyrics = lyrics.LRC
 			}
-			if w.cfg.Download.SaveLrcFile && lyrics.LRC != "" {
+			if w.cfg.Download.SaveLrcFile {
 				metadata.SaveLRCFile(tempFile, lyrics.LRC)
 			}
 		}
@@ -293,6 +364,34 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 		}
 		remotePaths[bid] = remotePath
 		w.log.Info("uploaded", zap.String("backend", bid), zap.String("path", remotePath))
+
+		// 上传歌词 .lrc 文件（与歌曲同目录）
+		if w.cfg.Download.SaveLrcFile && lrcContent != "" {
+			lrcLocal := strings.TrimSuffix(tempFile, filepath.Ext(tempFile)) + ".lrc"
+			lrcRemote := strings.TrimSuffix(remotePath, filepath.Ext(remotePath)) + ".lrc"
+			if _, err := os.Stat(lrcLocal); err == nil {
+				if err := backend.Upload(ctx, lrcLocal, lrcRemote, nil); err != nil {
+					w.log.Warn("upload lrc failed", zap.String("backend", bid), zap.String("path", lrcRemote), zap.Error(err))
+				} else {
+					w.log.Info("uploaded lrc", zap.String("backend", bid), zap.String("path", lrcRemote))
+				}
+			}
+		}
+
+		// 上传封面文件（与歌曲同目录，命名为 cover.jpg）
+		if coverPath != "" {
+			if _, err := os.Stat(coverPath); err == nil {
+				coverRemote := "cover.jpg"
+				if dir != "" && dir != "." {
+					coverRemote = dir + "/cover.jpg"
+				}
+				if err := backend.Upload(ctx, coverPath, coverRemote, nil); err != nil {
+					w.log.Warn("upload cover failed", zap.String("backend", bid), zap.String("path", coverRemote), zap.Error(err))
+				} else {
+					w.log.Info("uploaded cover", zap.String("backend", bid), zap.String("path", coverRemote))
+				}
+			}
+		}
 	}
 
 	// 7. 写入 Library 记录
@@ -306,22 +405,24 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 
 	remotePathsJSON, _ := json.Marshal(remotePaths)
 	library := &models.Library{
-		ID:          uuid.New().String(),
-		Title:       trackInfo.Title,
-		Artist:      trackInfo.Artist,
-		Album:       trackInfo.Album,
-		Year:        trackInfo.Year,
-		Genre:       trackInfo.Genre,
-		Quality:     source.Quality(sourceInfo.Quality).String(),
-		Format:      format,
-		FileSize:    fileSize,
-		Duration:    trackInfo.Duration,
-		Source:      trackInfo.Source,
-		RemotePaths: models.JSON(remotePathsJSON),
-		CoverURL:    trackInfo.CoverURL,
-		HasLyrics:   tagInfo.Lyrics != "",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:            uuid.New().String(),
+		Title:         trackInfo.Title,
+		Artist:        trackInfo.Artist,
+		Album:         trackInfo.Album,
+		Year:          trackInfo.Year,
+		Genre:         trackInfo.Genre,
+		Quality:       source.Quality(sourceInfo.Quality).String(),
+		Format:        format,
+		FileSize:      fileSize,
+		Duration:      trackInfo.Duration,
+		Source:        trackInfo.Source,
+		SourceTrackID: trackInfo.ID,
+		RemotePaths:   models.JSON(remotePathsJSON),
+		CoverURL:      trackInfo.CoverURL,
+		LyricsLRC:     lrcContent,
+		HasLyrics:     lrcContent != "",
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 
 	if err := w.db.Create(library).Error; err != nil {

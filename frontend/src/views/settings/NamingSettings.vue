@@ -22,6 +22,11 @@ const presets = [
     example: '周杰伦/爱在西元前.flac',
   },
   {
+    label: '歌名同名文件夹（歌曲/歌词/封面放一起）',
+    value: '{title}/{title}.{ext}',
+    example: '爱在西元前/爱在西元前.flac',
+  },
+  {
     label: '全部放在一起',
     value: '{artist} - {title}.{ext}',
     example: '周杰伦 - 爱在西元前.flac',

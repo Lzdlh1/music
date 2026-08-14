@@ -36,23 +36,25 @@ func (t *Task) BeforeCreate(tx *gorm.DB) error {
 
 // Library 音乐库记录
 type Library struct {
-	ID          string    `json:"id" gorm:"primaryKey"`
-	Title       string    `json:"title" gorm:"not null"`
-	Artist      string    `json:"artist"`
-	Album       string    `json:"album"`
-	Year        int       `json:"year"`
-	Genre       string    `json:"genre"`
-	Quality     string    `json:"quality"`
-	Format      string    `json:"format"`
-	FileSize    int64     `json:"file_size"`
-	Duration    int       `json:"duration"`
-	Source      string    `json:"source"`
-	RemotePaths JSON      `json:"remote_paths,omitempty" gorm:"type:json"`
-	CoverURL    string    `json:"cover_url"`
-	HasLyrics   bool      `json:"has_lyrics"`
-	Metadata    JSON      `json:"metadata,omitempty" gorm:"type:json"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            string    `json:"id" gorm:"primaryKey"`
+	Title         string    `json:"title" gorm:"not null"`
+	Artist        string    `json:"artist"`
+	Album         string    `json:"album"`
+	Year          int       `json:"year"`
+	Genre         string    `json:"genre"`
+	Quality       string    `json:"quality"`
+	Format        string    `json:"format"`
+	FileSize      int64     `json:"file_size"`
+	Duration      int       `json:"duration"`
+	Source        string    `json:"source"`
+	SourceTrackID string    `json:"source_track_id"` // 原始音乐源曲目 ID（如 GD音乐台-JOOX:xxx）
+	RemotePaths   JSON      `json:"remote_paths,omitempty" gorm:"type:json"`
+	CoverURL      string    `json:"cover_url"`
+	LyricsLRC     string    `json:"lyrics_lrc"` // 下载时保存的 LRC 歌词文本
+	HasLyrics     bool      `json:"has_lyrics"`
+	Metadata      JSON      `json:"metadata,omitempty" gorm:"type:json"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (Library) TableName() string { return "library" }

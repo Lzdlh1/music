@@ -213,6 +213,11 @@ func (h *CloudHandler) LibraryLyrics(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": true, "message": "not found"})
 	}
 
+	// 优先返回下载时保存的歌词
+	if item.LyricsLRC != "" {
+		return c.JSON(fiber.Map{"data": fiber.Map{"lrc": item.LyricsLRC, "source": item.Source}})
+	}
+
 	lyrics, err := h.lyricsMgr.FetchLyrics(c.Context(), item.Title, item.Artist)
 	if err != nil {
 		return c.JSON(fiber.Map{"data": nil, "message": "lyrics not found"})
