@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"net/url"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/musicflow/musicflow/internal/metadata"
 	"github.com/musicflow/musicflow/internal/source"
@@ -66,7 +68,7 @@ func (h *SearchHandler) Search(c *fiber.Ctx) error {
 
 // GetTrackSources 获取曲目所有可用源
 func (h *SearchHandler) GetTrackSources(c *fiber.Ctx) error {
-	id := c.Params("id")
+	id := pathParam(c, "id")
 	sources, err := h.aggregator.GetTrackSources(c.Context(), id, source.QualityAny)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
@@ -74,9 +76,18 @@ func (h *SearchHandler) GetTrackSources(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"data": sources})
 }
 
+// pathParam 获取路径参数并做 URL 解码（Fiber 的 Params 不解码 URL 编码）
+func pathParam(c *fiber.Ctx, key string) string {
+	raw := c.Params(key)
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		return decoded
+	}
+	return raw
+}
+
 // GetLyrics 获取歌词预览
 func (h *SearchHandler) GetLyrics(c *fiber.Ctx) error {
-	id := c.Params("id")
+	id := pathParam(c, "id")
 
 	// 先尝试从音乐源获取
 	sources := h.aggregator.Sources()
@@ -106,7 +117,7 @@ func (h *SearchHandler) GetLyrics(c *fiber.Ctx) error {
 
 // GetCover 获取封面
 func (h *SearchHandler) GetCover(c *fiber.Ctx) error {
-	id := c.Params("id")
+	id := pathParam(c, "id")
 
 	sources := h.aggregator.Sources()
 	for _, src := range sources {
