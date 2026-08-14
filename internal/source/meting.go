@@ -202,13 +202,19 @@ func (s *MetingSource) Search(ctx context.Context, query SearchQuery) ([]TrackRe
 	}
 
 	var results []TrackResult
+	// GD API 的 url 接口 br=999 时大部分音乐源（netease/joox 等）返回无损，
+	// 而 bilibili 等视频源只返回流媒体音质，按源类型标记搜索结果音质
+	searchQuality := QualityFLAC
+	if s.musicSource == "bilibili" {
+		searchQuality = Quality320
+	}
 	for _, t := range tracks {
 		results = append(results, TrackResult{
 			ID:       s.name + ":" + t.IDString(),
 			Title:    t.Name,
 			Artist:   t.ArtistString(),
 			Album:    t.Album,
-			Quality:  Quality320,
+			Quality:  searchQuality,
 			Source:   s.name,
 			CoverURL: "", // Meting 搜索不直接返回封面 URL，需要额外请求
 			Score:    0.8,
