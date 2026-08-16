@@ -32,7 +32,8 @@ const (
 // Config 139 云盘配置
 type Config struct {
 	Token        string `json:"token"`          // 网页端登录获取的 Authorization（Base64，不含 Basic 前缀）
-	UserDomainID string `json:"user_domain_id"` // 用户域 ID，查询个人云路由必需
+	UserDomainID string `json:"user_domain_id"` // 用户域 ID
+	PersonalHost string `json:"personal_host"`  // 个人云动态 host（登录时从 routerInfo 获取，缓存避免每次查询）
 }
 
 // Yun139Storage 139 云盘存储后端
@@ -125,28 +126,31 @@ func (s *Yun139Storage) ensureSecretKey(ctx context.Context) {
 	})
 }
 
-// ensureHost 获取个人云动态 host（请求体加密 + 完整签名头）
+// ensureHost 获取个人云动态 host：优先使用登录时缓存的路由，缺失时实时查询
 func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 	if s.host != "" {
 		return nil
 	}
+	if s.cfg.PersonalHost != "" {
+		s.mu.Lock()
+		s.host = strings.TrimSuffix(s.cfg.PersonalHost, "/")
+		s.mu.Unlock()
+		return nil
+	}
 	if s.cfg.UserDomainID == "" {
-		return fmt.Errorf("缺少 userDomainId，请重新登录获取")
+		return fmt.Errorf("缺少个人云路由信息，请重新登录获取")
 	}
 	body := map[string]interface{}{
 		"userInfo":    map[string]interface{}{"userDomainId": s.cfg.UserDomainID},
 		"modAddrType": 1,
 	}
 	plainJSON, _ := json.Marshal(body)
-	enc, err := encryptPayload(plainJSON)
-	if err != nil {
-		return err
-	}
 	s.ensureSecretKey(ctx)
 	if s.skeyErr != nil {
 		return s.skeyErr
 	}
-	raw, err := s.postRawInternal(ctx, routeURL, enc, calSign(string(plainJSON)))
+	// 网页端 qryRoutePolicy 请求体为明文，签名基于明文计算
+	raw, err := s.postRawInternal(ctx, routeURL, string(plainJSON), calSign(string(plainJSON)))
 	if err != nil {
 		return err
 	}

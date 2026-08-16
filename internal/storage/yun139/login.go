@@ -166,7 +166,8 @@ type LoginResult struct {
 	Authorization string `json:"authorization"` // 用于 hcy 接口的 Authorization（不含 Basic 前缀）
 	Account       string `json:"account"`       // 完整账号（手机号）
 	AuthToken     string `json:"auth_token"`
-	UserDomainID  string `json:"user_domain_id"` // 用户域 ID，查询个人云路由必需
+	UserDomainID  string `json:"user_domain_id"` // 用户域 ID
+	PersonalHost  string `json:"personal_host"`  // 个人云动态 host（登录响应 routerInfo 中提取）
 }
 
 // LoginError 登录错误（含平台错误码）
@@ -476,11 +477,12 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 
 	// 解析 data
 	var data struct {
-		Account         string `json:"account"`
-		Token           string `json:"token"`
-		AuthToken       string `json:"authToken"`
-		EncryptAccount  string `json:"encryptAccount"`
-		UserDomainID    string `json:"userDomainId"`
+		Account        string          `json:"account"`
+		Token          string          `json:"token"`
+		AuthToken      string          `json:"authToken"`
+		EncryptAccount string          `json:"encryptAccount"`
+		UserDomainID   string          `json:"userDomainId"`
+		RouterInfo     json.RawMessage `json:"routerInfo"`
 	}
 	if len(out.Data) > 0 && string(out.Data) != "null" {
 		_ = json.Unmarshal(out.Data, &data)
@@ -513,7 +515,28 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 		Account:       fullAccount,
 		AuthToken:     authToken,
 		UserDomainID:  data.UserDomainID,
+		PersonalHost:  extractPersonalHost(data.RouterInfo),
 	}, nil
+}
+
+// extractPersonalHost 从登录响应的 routerInfo（路由列表）提取个人云 host
+func extractPersonalHost(routerInfo json.RawMessage) string {
+	if len(routerInfo) == 0 || string(routerInfo) == "null" {
+		return ""
+	}
+	var list []struct {
+		ModName string `json:"modName"`
+		HTTPS   string `json:"httpsUrl"`
+	}
+	if err := json.Unmarshal(routerInfo, &list); err != nil {
+		return ""
+	}
+	for _, r := range list {
+		if r.ModName == "personal" && r.HTTPS != "" {
+			return strings.TrimSuffix(r.HTTPS, "/")
+		}
+	}
+	return ""
 }
 
 // GetSmsCode 发送短信验证码，返回 random（供登录时使用）
