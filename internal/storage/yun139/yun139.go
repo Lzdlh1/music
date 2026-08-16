@@ -3,7 +3,6 @@
 package yun139
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
@@ -71,6 +70,14 @@ func (s *Yun139Storage) ID() string               { return s.id }
 func (s *Yun139Storage) Name() string              { return s.name }
 func (s *Yun139Storage) Type() storage.StorageType { return storage.StorageYun139 }
 
+// firstBytes 取字节切片前 n 字节
+func firstBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[:n]
+	}
+	return b
+}
+
 // ---------- 认证与路由 ----------
 
 // accountName 从 token 中解析账号（Base64(uid:account:token|v2|v3|expireMs)）
@@ -95,12 +102,19 @@ func (s *Yun139Storage) ensureSecretKey(ctx context.Context) {
 			s.skeyErr = err
 			return
 		}
-		raw, err := s.postRawInternal(ctx, "https://yun.139.com/orchestration/auth-rebuild/key/v1.0/getRsaPublicKey", enc, calSign(string(plainJSON)))
+		raw, err := s.postRawInternal(ctx, "https://yun.139.com/orchestration/auth-rebuild/key/v1.0/getRsaPublicKey", enc, calSign(string(plainJSON)), "")
 		if err != nil {
 			s.skeyErr = err
 			return
 		}
 		respBytes := []byte(strings.TrimSpace(string(raw)))
+		// 响应可能为 JSON 字符串包裹的 base64 密文
+		if strings.HasPrefix(string(respBytes), `"`) {
+			var s string
+			if err := json.Unmarshal(respBytes, &s); err == nil {
+				respBytes = []byte(s)
+			}
+		}
 		if !strings.HasPrefix(string(respBytes), "{") {
 			if pt, derr := decryptPayload(string(respBytes)); derr == nil {
 				respBytes = pt
@@ -126,6 +140,12 @@ func (s *Yun139Storage) ensureSecretKey(ctx context.Context) {
 	})
 }
 
+// normalizePersonalHost 处理路由 host：去除尾部斜杠与重复的 /hcy 后缀
+func normalizePersonalHost(h string) string {
+	h = strings.TrimSuffix(strings.TrimSuffix(h, "/"), "/hcy")
+	return h
+}
+
 // ensureHost 获取个人云动态 host：优先使用登录时缓存的路由，缺失时实时查询
 func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 	if s.host != "" {
@@ -133,12 +153,16 @@ func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 	}
 	if s.cfg.PersonalHost != "" {
 		s.mu.Lock()
-		s.host = strings.TrimSuffix(s.cfg.PersonalHost, "/")
+		s.host = normalizePersonalHost(s.cfg.PersonalHost)
 		s.mu.Unlock()
+		s.log.Info("139 use cached personal host", zap.String("host", s.host))
 		return nil
 	}
+	s.log.Warn("139 no personal host in config",
+		zap.Bool("hasUserDomainID", s.cfg.UserDomainID != ""),
+		zap.Bool("hasToken", s.cfg.Token != ""))
 	if s.cfg.UserDomainID == "" {
-		return fmt.Errorf("缺少个人云路由信息，请重新登录获取")
+		return fmt.Errorf("路由错误：缺少个人云路由信息（personal_host/user_domain_id 未保存），请重新登录")
 	}
 	body := map[string]interface{}{
 		"userInfo":    map[string]interface{}{"userDomainId": s.cfg.UserDomainID},
@@ -149,19 +173,27 @@ func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 	if s.skeyErr != nil {
 		return s.skeyErr
 	}
-	// 网页端 qryRoutePolicy 请求体为明文，签名基于明文计算
-	raw, err := s.postRawInternal(ctx, routeURL, string(plainJSON), calSign(string(plainJSON)))
+	// qryRoutePolicy 与登录接口一致：请求体需 AES 加密封装（服务端按密文解密），签名基于明文计算
+	enc, err := encryptPayload(plainJSON)
 	if err != nil {
 		return err
 	}
-	respBytes := []byte(strings.TrimSpace(string(raw)))
-	if !strings.HasPrefix(string(respBytes), "{") {
-		if pt, derr := decryptPayload(string(respBytes)); derr == nil {
-			respBytes = pt
-		}
+	raw, err := s.postRawInternal(ctx, routeURL, enc, calSign(string(plainJSON)), s.cfg.Token)
+	if err != nil {
+		return err
 	}
+	respBytes, derr := decryptRespPayload(raw)
+	if derr != nil {
+		s.log.Warn("139 qryRoutePolicy decrypt failed",
+			zap.Error(derr),
+			zap.ByteString("raw_prefix", firstBytes(raw, 200)))
+		return derr
+	}
+	s.log.Debug("139 qryRoutePolicy response", zap.ByteString("body", respBytes))
 	var out struct {
-		Success bool `json:"success"`
+		Success bool   `json:"success"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
 		Data    struct {
 			RoutePolicyList []struct {
 				ModName string `json:"modName"`
@@ -170,13 +202,20 @@ func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBytes, &out); err != nil {
+		s.log.Warn("139 qryRoutePolicy unmarshal failed",
+			zap.Error(err),
+			zap.ByteString("resp_bytes", respBytes))
 		return err
+	}
+	if !out.Success {
+		return fmt.Errorf("139 查询路由失败: %s %s", out.Code, out.Message)
 	}
 	for _, p := range out.Data.RoutePolicyList {
 		if p.ModName == "personal" && p.HTTPS != "" {
 			s.mu.Lock()
-			s.host = strings.TrimSuffix(p.HTTPS, "/")
+			s.host = normalizePersonalHost(p.HTTPS)
 			s.mu.Unlock()
+			s.log.Info("139 qryRoutePolicy got personal host", zap.String("host", s.host))
 			return nil
 		}
 	}
@@ -184,8 +223,8 @@ func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 	return fmt.Errorf("未找到个人云路由")
 }
 
-// postRawInternal 执行 POST（加密请求用，带完整签名头）
-func (s *Yun139Storage) postRawInternal(ctx context.Context, url, body, sign string) ([]byte, error) {
+// postRawInternal 执行 POST（带完整签名头，可选 Authorization）
+func (s *Yun139Storage) postRawInternal(ctx context.Context, url, body, sign, authToken string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -210,6 +249,9 @@ func (s *Yun139Storage) postRawInternal(ctx context.Context, url, body, sign str
 	req.Header.Set("mcloud-client", "10701")
 	req.Header.Set("mcloud-version", "7.17.9")
 	req.Header.Set("x-huawei-channelSrc", "10000034")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Basic "+authToken)
+	}
 	// 设备指纹头（签名校验/会话关联需要）
 	if s.visitorID != "" {
 		req.Header.Set("X-Deviceinfo", "||9|7.17.9|chrome|142.0.7444.235|"+s.visitorID+"||windows 10||zh-CN|||")
@@ -292,12 +334,21 @@ func (s *Yun139Storage) post(ctx context.Context, apiPath string, body interface
 	if err := s.ensureHost(ctx); err != nil {
 		return err
 	}
+	s.ensureSecretKey(ctx)
+	if s.skeyErr != nil {
+		return s.skeyErr
+	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
+	// hcy 接口请求体同样需 AES 加密封装（服务端按密文解密），签名基于明文计算
+	enc, err := encryptPayload(bodyBytes)
+	if err != nil {
+		return err
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.host+apiPath, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.host+apiPath, strings.NewReader(enc))
 	if err != nil {
 		return err
 	}
@@ -314,6 +365,16 @@ func (s *Yun139Storage) post(ctx context.Context, apiPath string, body interface
 		return err
 	}
 
+	// hcy 接口响应同样为 AES 封装（JSON 字符串包裹的 base64 密文），统一解密
+	if plain, derr := decryptRespPayload(data); derr == nil {
+		data = plain
+	} else {
+		s.log.Warn("139 hcy response decrypt failed",
+			zap.String("path", apiPath),
+			zap.Error(derr),
+			zap.ByteString("raw_prefix", firstBytes(data, 200)))
+	}
+
 	var result struct {
 		Success bool   `json:"success"`
 		Code    string `json:"code"`
@@ -321,6 +382,11 @@ func (s *Yun139Storage) post(ctx context.Context, apiPath string, body interface
 	}
 	_ = json.Unmarshal(data, &result)
 	if !result.Success {
+		s.log.Warn("139 hcy api error",
+			zap.String("path", apiPath),
+			zap.String("code", result.Code),
+			zap.String("message", result.Message),
+			zap.ByteString("raw_prefix", firstBytes(data, 300)))
 		return fmt.Errorf("139 api error: %s %s", result.Code, result.Message)
 	}
 	if out != nil && len(data) > 0 {
@@ -331,23 +397,38 @@ func (s *Yun139Storage) post(ctx context.Context, apiPath string, body interface
 
 func (s *Yun139Storage) setHeaders(req *http.Request, body string) {
 	sign := calSign(body)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
 	req.Header.Set("Authorization", "Basic "+s.cfg.Token)
-	req.Header.Set("mcloud-channel", "1000101")
-	req.Header.Set("mcloud-client", "10701")
-	req.Header.Set("mcloud-sign", sign)
-	req.Header.Set("mcloud-version", "7.14.0")
+	req.Header.Set("caller", "web")
+	req.Header.Set("hcy-cool-flag", "1")
 	req.Header.Set("CMS-DEVICE", "default")
+	req.Header.Set("x-yun-api-version", "v1")
+	req.Header.Set("x-yun-svc-type", "1")
 	req.Header.Set("x-SvcType", "1")
-	req.Header.Set("x-huawei-channelSrc", "10000034")
-	req.Header.Set("x-inner-ntwk", "2")
+	req.Header.Set("x-yun-module-type", "100")
+	req.Header.Set("x-yun-app-channel", "10000034")
+	req.Header.Set("x-yun-channel-source", "10000034")
 	req.Header.Set("x-m4c-caller", "PC")
 	req.Header.Set("x-m4c-src", "10002")
-	req.Header.Set("Inner-Hcy-Router-Https", "1")
+	req.Header.Set("x-inner-ntwk", "2")
+	req.Header.Set("mcloud-route", "001")
+	req.Header.Set("mcloud-channel", "1000101")
+	req.Header.Set("mcloud-client", "10701")
+	req.Header.Set("mcloud-version", "7.17.9")
+	req.Header.Set("x-huawei-channelSrc", "10000034")
+	if s.visitorID != "" {
+		req.Header.Set("X-Deviceinfo", "||9|7.17.9|chrome|142.0.7444.235|"+s.visitorID+"||windows 10||zh-CN|||")
+		req.Header.Set("x-yun-client-info", "||9|7.17.9|chrome|142.0.7444.235|"+s.visitorID+"||windows 10||zh-CN|||undefined||")
+	}
+	req.Header.Set("mcloud-sign", sign)
+	if s.secretKey != "" {
+		req.Header.Set("mcloud-skey", s.secretKey)
+	}
+	req.Header.Set("INNER-HCY-ROUTER-HTTPS", "1")
 	req.Header.Set("Origin", "https://yun.139.com")
 	req.Header.Set("Referer", "https://yun.139.com/w/")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Caller", "web")
 }
 
 // ---------- 文件操作 ----------
@@ -363,19 +444,23 @@ type yun139Item struct {
 // listPage 获取一层目录
 func (s *Yun139Storage) listDir(ctx context.Context, parentFileID string) ([]yun139Item, error) {
 	var items []yun139Item
-	cursor := interface{}(nil)
+	cursor := ""
 	for {
+		pageInfo := map[string]interface{}{"pageSize": 100}
+		if cursor != "" {
+			pageInfo["pageCursor"] = cursor
+		}
 		body := map[string]interface{}{
-			"pageInfo":   map[string]interface{}{"pageSize": 50, "pageCursor": cursor},
-			"orderBy":    "name",
-			"orderDirection": "ASC",
-			"parentFileId":  parentFileID,
+			"pageInfo":              pageInfo,
+			"orderBy":               "name",
+			"orderDirection":        "ASC",
+			"parentFileId":          parentFileID,
 			"imageThumbnailStyleList": []string{"Small", "Large"},
 		}
 		var out struct {
 			Data struct {
-				Items     []yun139Item `json:"items"`
-				NextCursor string      `json:"nextPageCursor"`
+				Items      []yun139Item `json:"items"`
+				NextCursor string       `json:"nextPageCursor"`
 			} `json:"data"`
 		}
 		if err := s.post(ctx, "/hcy/file/list", body, &out); err != nil {

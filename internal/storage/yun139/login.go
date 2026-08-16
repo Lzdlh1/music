@@ -387,6 +387,48 @@ func aesECBDecrypt(ciphertext []byte, key []byte) ([]byte, error) {
 	return pkcs7Unpad(pt)
 }
 
+// decryptRespPayload 解密接口响应（通用）：
+// 1. 去除 JSON 字符串外层引号（若响应为 "base64密文" 形式）
+// 2. AES-256-CBC（外层）解密非 JSON 密文
+// 3. data 字段若为 hex 密文，用固定 key 做 AES-128-ECB（内层）解密
+func decryptRespPayload(raw []byte) ([]byte, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(trimmed, `"`) {
+		var s string
+		if err := json.Unmarshal([]byte(trimmed), &s); err == nil {
+			trimmed = s
+		}
+	}
+	plain := []byte(trimmed)
+	if !strings.HasPrefix(trimmed, "{") {
+		pt, err := decryptPayload(trimmed)
+		if err != nil {
+			return nil, err
+		}
+		plain = pt
+	}
+	// 内层：data 字段为 hex 密文时 AES-128-ECB 解密
+	var probe struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(plain, &probe); err == nil && len(probe.Data) > 0 && string(probe.Data) != "null" {
+		dataStr := strings.Trim(string(probe.Data), `"`)
+		if !strings.HasPrefix(dataStr, "{") {
+			if ct, herr := hex.DecodeString(dataStr); herr == nil {
+				if pt2, derr := aesECBDecrypt(ct, []byte("qPqDw263XgFgL3u8")); derr == nil {
+					var obj map[string]json.RawMessage
+					if jerr := json.Unmarshal(plain, &obj); jerr == nil {
+						obj["data"] = pt2
+						rebuilt, _ := json.Marshal(obj)
+						plain = rebuilt
+					}
+				}
+			}
+		}
+	}
+	return plain, nil
+}
+
 // postEncrypted 加密请求并解密响应（两层：body AES-256-CBC，data 字段 AES-128-ECB）
 func (lc *LoginClient) postEncrypted(ctx context.Context, path string, plain interface{}) (*thirdLoginResp, error) {
 	plainJSON, err := json.Marshal(plain)
@@ -510,6 +552,11 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 	if fullAccount == "" {
 		fullAccount = account
 	}
+	lc.log.Info("yun139 login result",
+		zap.String("account", fullAccount),
+		zap.String("user_domain_id", data.UserDomainID),
+		zap.String("personal_host", extractPersonalHost(data.RouterInfo)),
+		zap.ByteString("data_raw", out.Data))
 	return &LoginResult{
 		Authorization: buildAuth(fullAccount, authToken),
 		Account:       fullAccount,
@@ -520,20 +567,62 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 }
 
 // extractPersonalHost 从登录响应的 routerInfo（路由列表）提取个人云 host
+// 兼容数组 [{"modName":"personal","httpsUrl":"..."}]、对象 {"personal":{"httpsUrl":"..."}} 及字符串三种格式
 func extractPersonalHost(routerInfo json.RawMessage) string {
 	if len(routerInfo) == 0 || string(routerInfo) == "null" {
 		return ""
 	}
+	// 格式 1：直接是 host 字符串
+	var s string
+	if err := json.Unmarshal(routerInfo, &s); err == nil && strings.HasPrefix(s, "http") {
+		return strings.TrimSuffix(s, "/")
+	}
+	// 格式 2：数组 [{modName,httpsUrl}]
 	var list []struct {
 		ModName string `json:"modName"`
 		HTTPS   string `json:"httpsUrl"`
+		URL     string `json:"url"`
 	}
-	if err := json.Unmarshal(routerInfo, &list); err != nil {
-		return ""
+	if err := json.Unmarshal(routerInfo, &list); err == nil {
+		for _, r := range list {
+			if r.ModName == "personal" {
+				u := r.HTTPS
+				if u == "" {
+					u = r.URL
+				}
+				if u != "" {
+					return strings.TrimSuffix(u, "/")
+				}
+			}
+		}
 	}
-	for _, r := range list {
-		if r.ModName == "personal" && r.HTTPS != "" {
-			return strings.TrimSuffix(r.HTTPS, "/")
+	// 格式 3：对象 {"personal":{"httpsUrl":"..."}} 或 {"modName":"personal","httpsUrl":"..."}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(routerInfo, &obj); err == nil {
+		if v, ok := obj["httpsUrl"]; ok {
+			var u string
+			if json.Unmarshal(v, &u) == nil && u != "" {
+				return strings.TrimSuffix(u, "/")
+			}
+		}
+		if v, ok := obj["personal"]; ok {
+			var inner struct {
+				HTTPS string `json:"httpsUrl"`
+				URL   string `json:"url"`
+				Host  string `json:"host"`
+			}
+			if json.Unmarshal(v, &inner) == nil {
+				u := inner.HTTPS
+				if u == "" {
+					u = inner.URL
+				}
+				if u == "" {
+					u = inner.Host
+				}
+				if u != "" {
+					return strings.TrimSuffix(u, "/")
+				}
+			}
 		}
 	}
 	return ""

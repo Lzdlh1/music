@@ -325,7 +325,11 @@ async function pollQr() {
 
 function applyLoginToken(data: any) {
   if (!data?.authorization) return
-  ;(form.value.config as any).token = data.authorization
+  const cfg = form.value.config as any
+  cfg.token = data.authorization
+  if (data.account) cfg.account = data.account
+  if (data.user_domain_id) cfg.user_domain_id = data.user_domain_id
+  if (data.personal_host) cfg.personal_host = data.personal_host
 }
 
 onBeforeUnmount(() => {
