@@ -76,3 +76,36 @@ export function isAudioFile(name: string) {
 export function isLyricsFile(name: string) {
   return /\.lrc$/i.test(name)
 }
+
+// ---------- 移动云盘（139）登录 ----------
+
+export interface Yun139LoginResult {
+  authorization: string
+  account: string
+  auth_token: string
+}
+
+/** 发送短信验证码 */
+export function yun139SendSms(account: string) {
+  return api.post('/yun139/sms/send', { account })
+}
+
+/** 短信验证码登录 */
+export function yun139SmsLogin(account: string, code: string, random: string, storageId?: string) {
+  return api.post('/yun139/sms/login', { account, code, random, storage_id: storageId })
+}
+
+/** 账号密码登录 */
+export function yun139PasswordLogin(account: string, password: string, storageId?: string) {
+  return api.post('/yun139/password/login', { account, password, storage_id: storageId })
+}
+
+/** 开始扫码登录 */
+export function yun139QrStart() {
+  return api.post('/yun139/qr/start')
+}
+
+/** 轮询扫码登录状态 */
+export function yun139QrPoll(sid: string, storageId?: string) {
+  return api.post('/yun139/qr/poll', { sid, storage_id: storageId })
+}

@@ -169,13 +169,14 @@ onMounted(fetchLibrary)
   font-weight: 700;
 }
 
-.cover-cell {
+:global(.cover-cell) {
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.cover-img {
+/* render 函数 h() 创建的节点不携带 scoped 属性，需用全局选择器 */
+:global(.cover-cell .cover-img) {
   width: 36px;
   height: 36px;
   border-radius: 6px;

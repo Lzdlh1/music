@@ -153,6 +153,14 @@ func (s *Server) setupRoutes() {
 	api.Delete("/storage/:id/file", cloudHandler.DeleteFile)
 	api.Post("/storage/:id/upload", cloudHandler.Upload)
 
+	// 移动云盘（139）网页端登录：短信验证码 / 账号密码 / 扫码
+	yun139Handler := handlers.NewYun139Handler(s.db, s.storageMgr, s.log)
+	api.Post("/yun139/sms/send", yun139Handler.SendSms)
+	api.Post("/yun139/sms/login", yun139Handler.SmsLogin)
+	api.Post("/yun139/password/login", yun139Handler.PasswordLogin)
+	api.Post("/yun139/qr/start", yun139Handler.StartQR)
+	api.Post("/yun139/qr/poll", yun139Handler.PollQR)
+
 	// 音乐源配置
 	sourceHandler := handlers.NewSourceHandler(s.db, s.log)
 	api.Get("/sources", sourceHandler.List)
