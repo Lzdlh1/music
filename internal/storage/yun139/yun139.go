@@ -31,19 +31,24 @@ const (
 
 // Config 139 云盘配置
 type Config struct {
-	Token string `json:"token"` // 网页端 Network 中 Authorization: Basic 后的值（Base64）
+	Token        string `json:"token"`          // 网页端登录获取的 Authorization（Base64，不含 Basic 前缀）
+	UserDomainID string `json:"user_domain_id"` // 用户域 ID，查询个人云路由必需
 }
 
 // Yun139Storage 139 云盘存储后端
 type Yun139Storage struct {
-	id     string
-	name   string
-	cfg    Config
-	client *http.Client
-	log    *zap.Logger
-	mu     sync.Mutex
-	host   string
-	account string
+	id        string
+	name      string
+	cfg       Config
+	client    *http.Client
+	log       *zap.Logger
+	mu        sync.Mutex
+	host      string
+	account   string
+	visitorID string // 设备指纹，部分接口签名校验需要
+	skeyOnce  sync.Once
+	skeyErr   error
+	secretKey string // mcloud-skey：RSA 加密的随机 AESKey
 }
 
 // New 创建 139 云盘存储
@@ -52,11 +57,12 @@ func New(id, name string, cfg Config, log *zap.Logger) *Yun139Storage {
 		log = zap.NewNop()
 	}
 	return &Yun139Storage{
-		id:     id,
-		name:   name,
-		cfg:    cfg,
-		client: &http.Client{Timeout: 60 * time.Second},
-		log:    log,
+		id:        id,
+		name:      name,
+		cfg:       cfg,
+		client:    &http.Client{Timeout: 60 * time.Second},
+		log:       log,
+		visitorID: randomHex(32),
 	}
 }
 
@@ -79,31 +85,77 @@ func (s *Yun139Storage) accountName() string {
 	return parts[1]
 }
 
-// ensureHost 获取个人云动态 host
+// ensureSecretKey 获取 RSA 公钥并生成 mcloud-skey（懒加载，只执行一次）
+func (s *Yun139Storage) ensureSecretKey(ctx context.Context) {
+	s.skeyOnce.Do(func() {
+		plainJSON := []byte(`{"clientCode":"10701","type":"1"}`)
+		enc, err := encryptPayload(plainJSON)
+		if err != nil {
+			s.skeyErr = err
+			return
+		}
+		raw, err := s.postRawInternal(ctx, "https://yun.139.com/orchestration/auth-rebuild/key/v1.0/getRsaPublicKey", enc, calSign(string(plainJSON)))
+		if err != nil {
+			s.skeyErr = err
+			return
+		}
+		respBytes := []byte(strings.TrimSpace(string(raw)))
+		if !strings.HasPrefix(string(respBytes), "{") {
+			if pt, derr := decryptPayload(string(respBytes)); derr == nil {
+				respBytes = pt
+			}
+		}
+		var out struct {
+			Success bool `json:"success"`
+			Data    struct {
+				PublicKey string `json:"publicKey"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(respBytes, &out); err != nil || out.Data.PublicKey == "" {
+			s.skeyErr = fmt.Errorf("获取 RSA 公钥失败: %s", string(respBytes))
+			return
+		}
+		aesKey := randomString(16)
+		skey, err := rsaEncryptPKCS1(aesKey, out.Data.PublicKey)
+		if err != nil {
+			s.skeyErr = err
+			return
+		}
+		s.secretKey = skey
+	})
+}
+
+// ensureHost 获取个人云动态 host（请求体加密 + 完整签名头）
 func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 	if s.host != "" {
 		return nil
 	}
-	acct := s.accountName()
-	if acct == "" {
-		return fmt.Errorf("无法从 token 解析账号，请检查 token 是否正确")
+	if s.cfg.UserDomainID == "" {
+		return fmt.Errorf("缺少 userDomainId，请重新登录获取")
 	}
-	body, _ := json.Marshal(map[string]interface{}{
-		"userInfo":    map[string]interface{}{"userType": 1, "accountType": 1, "accountName": acct},
+	body := map[string]interface{}{
+		"userInfo":    map[string]interface{}{"userDomainId": s.cfg.UserDomainID},
 		"modAddrType": 1,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, routeURL, bytes.NewReader(body))
+	}
+	plainJSON, _ := json.Marshal(body)
+	enc, err := encryptPayload(plainJSON)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.client.Do(req)
+	s.ensureSecretKey(ctx)
+	if s.skeyErr != nil {
+		return s.skeyErr
+	}
+	raw, err := s.postRawInternal(ctx, routeURL, enc, calSign(string(plainJSON)))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
+	respBytes := []byte(strings.TrimSpace(string(raw)))
+	if !strings.HasPrefix(string(respBytes), "{") {
+		if pt, derr := decryptPayload(string(respBytes)); derr == nil {
+			respBytes = pt
+		}
+	}
 	var out struct {
 		Success bool `json:"success"`
 		Data    struct {
@@ -113,7 +165,7 @@ func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 			} `json:"routePolicyList"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(respBytes, &out); err != nil {
 		return err
 	}
 	for _, p := range out.Data.RoutePolicyList {
@@ -124,7 +176,62 @@ func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 			return nil
 		}
 	}
+	s.log.Warn("139 qryRoutePolicy response", zap.ByteString("body", respBytes))
 	return fmt.Errorf("未找到个人云路由")
+}
+
+// postRawInternal 执行 POST（加密请求用，带完整签名头）
+func (s *Yun139Storage) postRawInternal(ctx context.Context, url, body, sign string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
+	req.Header.Set("caller", "web")
+	req.Header.Set("hcy-cool-flag", "1")
+	req.Header.Set("CMS-DEVICE", "default")
+	req.Header.Set("x-yun-api-version", "v1")
+	req.Header.Set("x-yun-svc-type", "1")
+	req.Header.Set("x-SvcType", "1")
+	req.Header.Set("x-yun-module-type", "100")
+	req.Header.Set("x-yun-app-channel", "10000034")
+	req.Header.Set("x-yun-channel-source", "10000034")
+	req.Header.Set("x-m4c-caller", "PC")
+	req.Header.Set("x-m4c-src", "10002")
+	req.Header.Set("x-inner-ntwk", "2")
+	req.Header.Set("mcloud-route", "001")
+	req.Header.Set("mcloud-channel", "1000101")
+	req.Header.Set("mcloud-client", "10701")
+	req.Header.Set("mcloud-version", "7.17.9")
+	req.Header.Set("x-huawei-channelSrc", "10000034")
+	// 设备指纹头（签名校验/会话关联需要）
+	if s.visitorID != "" {
+		req.Header.Set("X-Deviceinfo", "||9|7.17.9|chrome|142.0.7444.235|"+s.visitorID+"||windows 10||zh-CN|||")
+		req.Header.Set("x-yun-client-info", "||9|7.17.9|chrome|142.0.7444.235|"+s.visitorID+"||windows 10||zh-CN|||undefined||")
+	}
+	if sign == "" {
+		sign = calSign(body)
+	}
+	req.Header.Set("mcloud-sign", sign)
+	if s.secretKey != "" {
+		req.Header.Set("mcloud-skey", s.secretKey)
+	}
+	req.Header.Set("INNER-HCY-ROUTER-HTTPS", "1")
+	req.Header.Set("Origin", "https://yun.139.com")
+	req.Header.Set("Referer", "https://yun.139.com/w/")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 // ---------- 签名 ----------

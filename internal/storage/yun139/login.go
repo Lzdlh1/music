@@ -166,6 +166,7 @@ type LoginResult struct {
 	Authorization string `json:"authorization"` // 用于 hcy 接口的 Authorization（不含 Basic 前缀）
 	Account       string `json:"account"`       // 完整账号（手机号）
 	AuthToken     string `json:"auth_token"`
+	UserDomainID  string `json:"user_domain_id"` // 用户域 ID，查询个人云路由必需
 }
 
 // LoginError 登录错误（含平台错误码）
@@ -479,6 +480,7 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 		Token           string `json:"token"`
 		AuthToken       string `json:"authToken"`
 		EncryptAccount  string `json:"encryptAccount"`
+		UserDomainID    string `json:"userDomainId"`
 	}
 	if len(out.Data) > 0 && string(out.Data) != "null" {
 		_ = json.Unmarshal(out.Data, &data)
@@ -510,6 +512,7 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 		Authorization: buildAuth(fullAccount, authToken),
 		Account:       fullAccount,
 		AuthToken:     authToken,
+		UserDomainID:  data.UserDomainID,
 	}, nil
 }
 

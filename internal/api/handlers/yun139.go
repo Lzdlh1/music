@@ -141,6 +141,9 @@ func (h *Yun139Handler) saveToken(storageID string, result *yun139.LoginResult) 
 	if result.Account != "" {
 		cfg["account"] = result.Account
 	}
+	if result.UserDomainID != "" {
+		cfg["user_domain_id"] = result.UserDomainID
+	}
 	configJSON, _ := json.Marshal(cfg)
 
 	if err := h.db.Model(&models.StorageTarget{}).Where("id = ?", storageID).Update("config", models.JSON(configJSON)).Error; err != nil {
