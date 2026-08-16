@@ -269,7 +269,7 @@ async function doPasswordLogin() {
 // 二维码扫码登录
 const qrImg = ref('')
 const qrSid = ref('')
-const qrPolling = ref(false)
+const qrPolling = ref(false) // 轮询进行中（仅用于状态提示，不遮挡二维码）
 const qrStatus = ref('')
 let qrTimer: ReturnType<typeof setInterval> | null = null
 
@@ -429,7 +429,7 @@ onBeforeUnmount(() => {
             <!-- 扫码登录 -->
             <n-tab-pane name="qr" tab="扫码登录">
               <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0">
-                <n-spin :show="qrPolling" size="small">
+                <n-spin :show="!qrImg" size="small">
                   <img v-if="qrImg" :src="qrImg" alt="登录二维码" style="width: 200px; height: 200px; border-radius: 8px" />
                   <div v-else class="qr-placeholder">二维码将在此显示</div>
                 </n-spin>
