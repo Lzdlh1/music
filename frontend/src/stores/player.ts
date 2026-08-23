@@ -41,6 +41,7 @@ interface State {
   lyricsLoading: boolean
   showLyrics: boolean
   showSettings: boolean
+  showFullPlayer: boolean
   error: string
 }
 
@@ -140,6 +141,7 @@ export const usePlayerStore = defineStore('player', {
     lyricsLoading: false,
     showLyrics: false,
     showSettings: false,
+    showFullPlayer: false,
     error: '',
   }),
 
@@ -364,6 +366,14 @@ export const usePlayerStore = defineStore('player', {
 
     toggleSettings() {
       this.showSettings = !this.showSettings
+    },
+
+    openFullPlayer() {
+      this.showFullPlayer = true
+    },
+
+    closeFullPlayer() {
+      this.showFullPlayer = false
     },
 
     clearQueue() {

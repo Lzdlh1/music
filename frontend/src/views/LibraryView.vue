@@ -5,9 +5,19 @@ import { Icon } from '@iconify/vue'
 import type { LibraryItem, PlayTrack } from '@/types'
 import { listLibrary, libraryStreamUrl, deleteLibraryItem } from '@/api/library'
 import { usePlayerStore } from '@/stores/player'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const message = useMessage()
 const player = usePlayerStore()
+const { isMobile } = useBreakpoint()
+
+/** 秒数转 分:秒 */
+function fmtDuration(sec: number): string {
+  if (!sec || !isFinite(sec) || sec < 0) return '--:--'
+  const m = Math.floor(sec / 60)
+  const s = Math.floor(sec % 60)
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
 
 const items = ref<LibraryItem[]>([])
 const total = ref(0)
@@ -127,15 +137,62 @@ onMounted(fetchLibrary)
       <n-input
         v-model:value="searchQuery"
         placeholder="搜索库中歌曲..."
-        style="width: 300px"
+        class="library-search"
         clearable
         @update:value="fetchLibrary"
       />
     </div>
 
     <n-spin :show="loading">
+      <!-- 移动端：卡片列表（避免表格横向溢出） -->
+      <div v-if="isMobile && items.length" class="mobile-list">
+        <div
+          v-for="item in items"
+          :key="item.id"
+          class="mobile-item"
+          :class="{ playing: isCurrent(item) }"
+        >
+          <div class="mi-cover" @click="playOne(item)">
+            <img v-if="item.cover_url" :src="item.cover_url" alt="" loading="lazy" />
+            <n-icon v-else :size="20" color="#999">
+              <Icon icon="material-symbols:music-note" />
+            </n-icon>
+          </div>
+          <div class="mi-info" @click="playOne(item)">
+            <div class="mi-title" :title="item.title">{{ item.title }}</div>
+            <div class="mi-artist">
+              {{ item.artist || '未知艺术家' }}
+              <span v-if="item.album"> · {{ item.album }}</span>
+            </div>
+            <div class="mi-meta">
+              <n-tag v-if="item.quality" size="tiny" :bordered="false" round>{{ item.quality }}</n-tag>
+              <n-tag v-if="item.format" size="tiny" :bordered="false" round>{{ item.format }}</n-tag>
+              <span class="mi-duration">{{ fmtDuration(item.duration) }}</span>
+            </div>
+          </div>
+          <div class="mi-actions">
+            <n-button quaternary circle size="small" type="primary" @click="playOne(item)">
+              <template #icon>
+                <n-icon>
+                  <Icon
+                    :icon="isCurrent(item) && player.playing ? 'material-symbols:pause-rounded' : 'material-symbols:play-arrow-rounded'"
+                    :width="22"
+                  />
+                </n-icon>
+              </template>
+            </n-button>
+            <n-button quaternary circle size="small" type="error" @click="handleDelete(item)">
+              <template #icon>
+                <n-icon><Icon icon="material-symbols:delete-outline" :width="18" /></n-icon>
+              </template>
+            </n-button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 桌面端：数据表格 -->
       <n-data-table
-        v-if="items.length"
+        v-else-if="!isMobile && items.length"
         :columns="columns"
         :data="items"
         :loading="loading"
@@ -161,7 +218,13 @@ onMounted(fetchLibrary)
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 20px;
+}
+
+.library-search {
+  width: 300px;
 }
 
 .page-title {
@@ -181,5 +244,109 @@ onMounted(fetchLibrary)
   height: 36px;
   border-radius: 6px;
   object-fit: cover;
+}
+
+/* ---------- 移动端卡片列表 ---------- */
+.mobile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobile-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--n-card-color, #fff);
+  border-radius: 12px;
+  border: 1px solid var(--n-border-color, #e0e0e0);
+  transition: all 0.2s;
+}
+
+.mobile-item.playing {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.mi-cover {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--n-fill-color-2, #f5f5f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mi-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mi-info {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.mi-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mi-artist {
+  font-size: 12px;
+  color: var(--n-text-color-3, #999);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.mi-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.mi-duration {
+  color: var(--n-text-color-3, #aaa);
+  font-variant-numeric: tabular-nums;
+}
+
+.mi-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* 移动端适配：header 纵向堆叠 + 加大底部留白避免被播放条/标签栏遮挡 */
+@media (max-width: 767px) {
+  .library-page {
+    padding-bottom: 150px;
+  }
+
+  .library-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .library-search {
+    width: 100%;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
 }
 </style>
