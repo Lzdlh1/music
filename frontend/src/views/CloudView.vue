@@ -101,6 +101,15 @@ function enterDir(dir: FileInfo) {
   loadFiles()
 }
 
+/** 双击行：文件夹则进入，文件则播放 */
+function openRow(row: FileInfo) {
+  if (row.is_dir) {
+    enterDir(row)
+  } else if (isAudioFile(row.name)) {
+    playAudio(row)
+  }
+}
+
 function goCrumb(index: number) {
   const segs = crumbPath.value.slice(0, index + 1)
   currentPath.value = segs.length ? '/' + segs.join('/') : '/'
@@ -261,16 +270,11 @@ const columns: DataTableColumns<FileInfo> = [
   {
     title: '操作',
     key: 'actions',
-    width: 240,
+    width: 200,
     render: (row) =>
       h('div', { style: 'display:flex;gap:6px' }, [
-        row.is_dir
+        !row.is_dir
           ? h(
-              NButton,
-              { size: 'tiny', onClick: () => enterDir(row) },
-              { default: () => '打开' },
-            )
-          : h(
               NButton,
               {
                 size: 'tiny',
@@ -279,7 +283,8 @@ const columns: DataTableColumns<FileInfo> = [
                 onClick: () => playAudio(row),
               },
               { default: () => '播放' },
-            ),
+            )
+          : null,
         h(NButton, { size: 'tiny', onClick: () => openRename(row) }, { default: () => '重命名' }),
         row.is_dir
           ? h(NButton, { size: 'tiny', onClick: () => handleDelete(row) }, { default: () => '删除' })
@@ -351,6 +356,7 @@ const columns: DataTableColumns<FileInfo> = [
         :row-key="(row: FileInfo) => row.path"
         :row-props="(row: FileInfo) => ({
           style: 'cursor:' + (row.is_dir ? 'pointer' : 'default'),
+          onDblclick: () => openRow(row),
         })"
         striped
         size="small"
