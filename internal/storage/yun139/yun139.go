@@ -648,7 +648,7 @@ func (s *Yun139Storage) Open(ctx context.Context, p string, offset, length int64
 	}
 	var out struct {
 		Data struct {
-			CdnURL string `json:"cdnUrl"`
+			DownloadURL string `json:"url"`
 		} `json:"data"`
 	}
 	if err := s.post(ctx, "/hcy/file/getDownloadUrl", map[string]interface{}{
@@ -656,10 +656,10 @@ func (s *Yun139Storage) Open(ctx context.Context, p string, offset, length int64
 	}, &out); err != nil {
 		return nil, err
 	}
-	if out.Data.CdnURL == "" {
+	if out.Data.DownloadURL == "" {
 		return nil, fmt.Errorf("no download url")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, out.Data.CdnURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, out.Data.DownloadURL, nil)
 	if err != nil {
 		return nil, err
 	}
