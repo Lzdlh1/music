@@ -13,19 +13,23 @@ import (
 
 // LocalStorage 本地目录存储后端
 type LocalStorage struct {
-	id       string
-	name     string
-	basePath string
+	id        string
+	name      string
+	basePath  string
+	uploadDir string
 }
 
 // New 创建本地存储
-func New(id, name, basePath string) (*LocalStorage, error) {
+func New(id, name, basePath, uploadDir string) (*LocalStorage, error) {
 	abs, err := filepath.Abs(basePath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve path: %w", err)
 	}
-	return &LocalStorage{id: id, name: name, basePath: abs}, nil
+	return &LocalStorage{id: id, name: name, basePath: abs, uploadDir: uploadDir}, nil
 }
+
+// UploadDir 返回该存储配置的上传文件夹（相对存储根）
+func (l *LocalStorage) UploadDir() string { return l.uploadDir }
 
 // fullPath 将远程路径（正斜杠）转换为本地文件系统路径
 func (l *LocalStorage) fullPath(remote string) string {

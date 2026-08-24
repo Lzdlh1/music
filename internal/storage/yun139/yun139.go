@@ -33,6 +33,7 @@ type Config struct {
 	Token        string `json:"token"`          // 网页端登录获取的 Authorization（Base64，不含 Basic 前缀）
 	UserDomainID string `json:"user_domain_id"` // 用户域 ID
 	PersonalHost string `json:"personal_host"`  // 个人云动态 host（登录时从 routerInfo 获取，缓存避免每次查询）
+	UploadDir    string `json:"upload_dir"`     // 上传文件夹（相对存储根）
 }
 
 // Yun139Storage 139 云盘存储后端
@@ -69,6 +70,9 @@ func New(id, name string, cfg Config, log *zap.Logger) *Yun139Storage {
 func (s *Yun139Storage) ID() string               { return s.id }
 func (s *Yun139Storage) Name() string              { return s.name }
 func (s *Yun139Storage) Type() storage.StorageType { return storage.StorageYun139 }
+
+// UploadDir 返回该存储配置的上传文件夹（相对存储根）
+func (s *Yun139Storage) UploadDir() string { return s.cfg.UploadDir }
 
 // firstBytes 取字节切片前 n 字节
 func firstBytes(b []byte, n int) []byte {

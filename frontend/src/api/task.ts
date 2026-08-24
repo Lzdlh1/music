@@ -5,6 +5,7 @@ export function createTask(data: {
   track_info: Record<string, unknown>
   selected_source: Record<string, unknown>
   upload_targets: string[]
+  upload_dir?: string
 }) {
   return api.post<ApiResponse<Task>>('/tasks', data)
 }

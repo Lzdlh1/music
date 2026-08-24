@@ -79,7 +79,7 @@ func (s *Scheduler) SetProgressListener(fn ProgressListener) {
 }
 
 // CreateTask 创建新任务
-func (s *Scheduler) CreateTask(trackInfo, selectedSource, uploadTargets []byte) (*models.Task, error) {
+func (s *Scheduler) CreateTask(trackInfo, selectedSource, uploadTargets []byte, uploadDir string) (*models.Task, error) {
 	task := &models.Task{
 		ID:             uuid.New().String(),
 		Type:           "SINGLE",
@@ -88,6 +88,7 @@ func (s *Scheduler) CreateTask(trackInfo, selectedSource, uploadTargets []byte) 
 		TrackInfo:      models.JSON(trackInfo),
 		SelectedSource: models.JSON(selectedSource),
 		UploadTargets:  models.JSON(uploadTargets),
+		UploadDir:      uploadDir,
 		CreatedAt:      time.Now(),
 	}
 

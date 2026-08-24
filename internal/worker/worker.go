@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -141,6 +142,12 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 	var uploadTargetIDs []string
 	if len(task.UploadTargets) > 0 {
 		json.Unmarshal([]byte(task.UploadTargets), &uploadTargetIDs)
+	}
+
+	// 用户指定的上传文件夹（相对存储根，统一为正斜杠并去掉首尾斜杠）
+	uploadDir := task.UploadDir
+	if uploadDir != "" {
+		uploadDir = strings.Trim(strings.ReplaceAll(uploadDir, "\\", "/"), "/")
 	}
 
 	w.log.Info("worker executing task",
@@ -329,6 +336,20 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 
 	for i, backend := range backends {
 		bid := backend.ID()
+
+		// 每个存储使用自身配置的上传文件夹（任务级 uploadDir 作为兜底）
+		bdir := uploadDir
+		if p, ok := backend.(uploadDirProvider); ok {
+			if d := p.UploadDir(); d != "" {
+				bdir = d
+			}
+		}
+		bdir = strings.Trim(strings.ReplaceAll(bdir, "\\", "/"), "/")
+		remoteForBackend := remotePath
+		if bdir != "" {
+			remoteForBackend = bdir + "/" + strings.TrimPrefix(remotePath, "/")
+		}
+
 		onProgress(scheduler.StatusUploading, scheduler.TaskProgress{
 			Stage:   "uploading",
 			Percent: 80.0 + 18.0*float64(i)/float64(len(backends)),
@@ -337,15 +358,15 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 			},
 		})
 
-		// 创建目录
-		dir := filepath.Dir(remotePath)
+		// 创建目录（用正斜杠，避免 Windows 反斜杠破坏云盘路径）
+		dir := path.Dir(remoteForBackend)
 		if dir != "" && dir != "." {
 			if err := backend.MkdirAll(ctx, dir); err != nil {
 				w.log.Warn("mkdir failed", zap.String("backend", bid), zap.Error(err))
 			}
 		}
 
-		err := backend.Upload(ctx, tempFile, remotePath, func(uploaded, total int64) {
+		err := backend.Upload(ctx, tempFile, remoteForBackend, func(uploaded, total int64) {
 			pct := 0.0
 			if total > 0 {
 				pct = float64(uploaded) / float64(total) * 100
@@ -362,13 +383,13 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 			w.log.Error("upload failed", zap.String("backend", bid), zap.Error(err))
 			continue
 		}
-		remotePaths[bid] = remotePath
-		w.log.Info("uploaded", zap.String("backend", bid), zap.String("path", remotePath))
+		remotePaths[bid] = remoteForBackend
+		w.log.Info("uploaded", zap.String("backend", bid), zap.String("path", remoteForBackend))
 
 		// 上传歌词 .lrc 文件（与歌曲同目录）
 		if w.cfg.Download.SaveLrcFile && lrcContent != "" {
 			lrcLocal := strings.TrimSuffix(tempFile, filepath.Ext(tempFile)) + ".lrc"
-			lrcRemote := strings.TrimSuffix(remotePath, filepath.Ext(remotePath)) + ".lrc"
+			lrcRemote := strings.TrimSuffix(remoteForBackend, filepath.Ext(remoteForBackend)) + ".lrc"
 			if _, err := os.Stat(lrcLocal); err == nil {
 				if err := backend.Upload(ctx, lrcLocal, lrcRemote, nil); err != nil {
 					w.log.Warn("upload lrc failed", zap.String("backend", bid), zap.String("path", lrcRemote), zap.Error(err))
@@ -509,6 +530,11 @@ func (w *Worker) downloadFromMTProto(ctx context.Context, url string, destPath s
 	// 暂作为待实现桩
 	w.log.Info("downloading from mtproto", zap.String("url", url))
 	return fmt.Errorf("mtproto download not implemented yet")
+}
+
+// uploadDirProvider 可选：存储后端提供自身“上传文件夹”（相对该存储根）
+type uploadDirProvider interface {
+	UploadDir() string
 }
 
 // resolveUploadTargets 解析上传目标

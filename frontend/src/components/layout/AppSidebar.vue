@@ -69,7 +69,7 @@ import { h } from 'vue'
     >
       <div class="logo">
         <Icon icon="material-symbols:music-note" :width="28" />
-        <span class="logo-text">MusicFlow</span>
+        <span class="logo-text">商角</span>
       </div>
       <n-menu
         :value="activeKey"

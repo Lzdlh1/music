@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -314,13 +317,14 @@ func (h *SettingsHandler) UpdateNaming(c *fiber.Ctx) error {
 
 // LibraryHandler 音乐库处理器
 type LibraryHandler struct {
-	db  *gorm.DB
-	log *zap.Logger
+	db      *gorm.DB
+	log     *zap.Logger
+	manager *storage.Manager
 }
 
 // NewLibraryHandler 创建音乐库处理器
-func NewLibraryHandler(db *gorm.DB, log *zap.Logger) *LibraryHandler {
-	return &LibraryHandler{db: db, log: log}
+func NewLibraryHandler(db *gorm.DB, manager *storage.Manager, log *zap.Logger) *LibraryHandler {
+	return &LibraryHandler{db: db, log: log, manager: manager}
 }
 
 func (h *LibraryHandler) List(c *fiber.Ctx) error {
@@ -352,8 +356,101 @@ func (h *LibraryHandler) Get(c *fiber.Ctx) error {
 }
 
 func (h *LibraryHandler) Delete(c *fiber.Ctx) error {
-	h.db.Delete(&models.Library{}, "id = ?", c.Params("id"))
+	id := c.Params("id")
+	var item models.Library
+	// 删除前先取出记录，拿到各存储的文件路径（记录不存在时也继续删除占位）
+	_ = h.db.First(&item, "id = ?", id).Error
+
+	h.deleteRemoteFiles(item)
+
+	h.db.Delete(&models.Library{}, "id = ?", id)
 	return c.JSON(fiber.Map{"message": "deleted"})
+}
+
+// deleteRemoteFiles 删除音乐库歌曲在各存储端（含本地/网盘）的文件数据及创建的空目录
+func (h *LibraryHandler) deleteRemoteFiles(item models.Library) {
+	if h.manager == nil || len(item.RemotePaths) == 0 {
+		return
+	}
+	var paths map[string]string
+	if err := json.Unmarshal(item.RemotePaths, &paths); err != nil {
+		h.log.Warn("parse library remote_paths failed", zap.String("id", item.ID), zap.Error(err))
+		return
+	}
+	for sid, remotePath := range paths {
+		if remotePath == "" {
+			continue
+		}
+		backend, ok := h.manager.Get(sid)
+		if !ok {
+			h.log.Warn("library delete: backend not found", zap.String("storage", sid))
+			continue
+		}
+		h.deleteRemoteEntry(backend, remotePath)
+	}
+}
+
+// deleteRemoteEntry 删除远端文件、同名 .lrc，并清理目录（含独占封面）
+func (h *LibraryHandler) deleteRemoteEntry(backend storage.Backend, remotePath string) {
+	ctx := context.Background()
+	// 删除音频本体
+	if err := backend.Delete(ctx, remotePath); err != nil {
+		h.log.Warn("library delete: remove file failed", zap.String("path", remotePath), zap.Error(err))
+	}
+	// 删除同名 .lrc（若存在）
+	base := strings.TrimSuffix(remotePath, path.Ext(remotePath))
+	_ = backend.Delete(ctx, base+".lrc")
+
+	dir := path.Dir(remotePath)
+	if dir != "" && dir != "." {
+		// 若目录只剩封面图（无其它音频/子目录），一并删除封面，便于彻底清空该歌曲目录
+		if files, err := backend.ListDir(ctx, dir); err == nil && len(files) > 0 {
+			onlyCover := true
+			for _, f := range files {
+				if f.IsDir || !isCoverImage(f.Name) {
+					onlyCover = false
+					break
+				}
+			}
+			if onlyCover {
+				for _, f := range files {
+					_ = backend.Delete(ctx, path.Join(dir, f.Name))
+				}
+			}
+		}
+	}
+	// 从文件所在目录向上清理空目录（遇到非空/出错即停止，避免误删用户其它文件）
+	h.cleanupEmptyDirs(backend, dir)
+}
+
+// isCoverImage 判断是否为封面图片名（cover.jpg/jpeg/png/webp）
+func isCoverImage(name string) bool {
+	lower := strings.ToLower(name)
+	if !strings.HasPrefix(lower, "cover.") {
+		return false
+	}
+	return strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") ||
+		strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".webp")
+}
+
+func (h *LibraryHandler) cleanupEmptyDirs(backend storage.Backend, start string) {
+	ctx := context.Background()
+	dir := start
+	for dir != "" && dir != "/" && dir != "." {
+		files, err := backend.ListDir(ctx, dir)
+		if err != nil || len(files) > 0 {
+			// 目录非空或无法读取则停止（保留，不误删）
+			return
+		}
+		if err := backend.Delete(ctx, dir); err != nil {
+			return
+		}
+		parent := path.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
 }
 
 // SystemHandler 系统信息处理器
@@ -370,7 +467,7 @@ func NewSystemHandler(db *gorm.DB, log *zap.Logger) *SystemHandler {
 func (h *SystemHandler) Info(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"version": "1.0.0",
-		"name":    "MusicFlow",
+		"name":    "商角",
 	})
 }
 

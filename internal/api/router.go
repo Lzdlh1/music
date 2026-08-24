@@ -179,7 +179,7 @@ func (s *Server) setupRoutes() {
 	api.Put("/settings/naming", settingsHandler.UpdateNaming)
 
 	// 音乐库
-	libraryHandler := handlers.NewLibraryHandler(s.db, s.log)
+	libraryHandler := handlers.NewLibraryHandler(s.db, s.storageMgr, s.log)
 	api.Get("/library", libraryHandler.List)
 	api.Get("/library/:id", libraryHandler.Get)
 	api.Get("/library/:id/lyrics", cloudHandler.LibraryLyrics)

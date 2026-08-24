@@ -17,6 +17,7 @@ type Task struct {
 	TrackInfo      JSON       `json:"track_info" gorm:"type:json;not null"`
 	SelectedSource JSON       `json:"selected_source,omitempty" gorm:"type:json"`
 	UploadTargets  JSON       `json:"upload_targets,omitempty" gorm:"type:json"`
+	UploadDir      string     `json:"upload_dir,omitempty"` // 上传目标文件夹（相对存储根）
 	Progress       JSON       `json:"progress,omitempty" gorm:"type:json"`
 	Error          string     `json:"error,omitempty"`
 	RetryCount     int        `json:"retry_count" gorm:"default:0"`

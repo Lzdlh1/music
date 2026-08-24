@@ -24,6 +24,7 @@ type CreateTaskRequest struct {
 	TrackInfo      map[string]interface{} `json:"track_info"`
 	SelectedSource map[string]interface{} `json:"selected_source"`
 	UploadTargets  []string               `json:"upload_targets"`
+	UploadDir      string                 `json:"upload_dir"`
 }
 
 // Create 创建单曲下载任务
@@ -37,7 +38,7 @@ func (h *TaskHandler) Create(c *fiber.Ctx) error {
 	sourceJSON, _ := json.Marshal(req.SelectedSource)
 	targetsJSON, _ := json.Marshal(req.UploadTargets)
 
-	task, err := h.scheduler.CreateTask(trackJSON, sourceJSON, targetsJSON)
+	task, err := h.scheduler.CreateTask(trackJSON, sourceJSON, targetsJSON, req.UploadDir)
 	if err != nil {
 		h.log.Error("create task failed", zap.Error(err))
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})

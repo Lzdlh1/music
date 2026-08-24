@@ -51,7 +51,7 @@ async function handleLogin() {
     <n-card class="login-card" size="large">
       <div class="login-logo">
         <Icon icon="material-symbols:music-note" :width="48" color="#6366f1" />
-        <h1>MusicFlow</h1>
+        <h1>商角</h1>
       </div>
       <n-form @submit.prevent="handleLogin">
         <n-form-item label="用户名">

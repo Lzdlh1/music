@@ -2,16 +2,17 @@
 import { ref, onMounted, computed, onBeforeUnmount } from 'vue'
 import {
   NCard, NButton, NInput, NSpace, NTag, NModal,
-  NForm, NFormItem, NSelect, NSwitch, NInputNumber, NTabs, NTabPane, NSpin,
+  NForm, NFormItem, NSelect, NSwitch, NInputNumber, NTabs, NTabPane, NSpin, NIcon,
   useMessage,
 } from 'naive-ui'
 import QRCode from 'qrcode'
+import { Icon } from '@iconify/vue'
 import {
   listStorageTargets, createStorageTarget, updateStorageTarget,
-  deleteStorageTarget, testStorageTarget,
+  deleteStorageTarget, testStorageTarget, browseStorage,
   yun139SendSms, yun139SmsLogin, yun139PasswordLogin, yun139QrStart, yun139QrPoll,
 } from '@/api/storage'
-import type { StorageTarget } from '@/types'
+import type { StorageTarget, FileInfo } from '@/types'
 
 const message = useMessage()
 const targets = ref<StorageTarget[]>([])
@@ -178,6 +179,48 @@ async function handleTest(id: string) {
   } catch {
     message.error('测试请求失败')
   }
+}
+
+// ---------- 上传文件夹选择（浏览网盘目录） ----------
+const showDirPicker = ref(false)
+const dirPath = ref('/')
+const dirList = ref<FileInfo[]>([])
+const dirLoading = ref(false)
+
+async function openDirPicker() {
+  if (!form.value.id) return
+  dirPath.value = '/'
+  showDirPicker.value = true
+  await loadDir()
+}
+
+async function loadDir() {
+  dirLoading.value = true
+  try {
+    const res = await browseStorage(form.value.id, dirPath.value)
+    dirList.value = (res.data.data || []).filter((f: FileInfo) => f.is_dir)
+  } catch {
+    dirList.value = []
+  } finally {
+    dirLoading.value = false
+  }
+}
+
+function enterDir(dir: FileInfo) {
+  dirPath.value = dir.path
+  loadDir()
+}
+
+function goParent() {
+  if (dirPath.value === '/') return
+  const idx = dirPath.value.lastIndexOf('/')
+  dirPath.value = idx <= 0 ? '/' : dirPath.value.slice(0, idx)
+  loadDir()
+}
+
+function pickDir() {
+  ;(form.value.config as any).upload_dir = dirPath.value === '/' ? '' : dirPath.value
+  showDirPicker.value = false
 }
 
 // ---------- 移动云盘（139）网页端登录 ----------
@@ -397,6 +440,13 @@ onBeforeUnmount(() => {
           </n-form-item>
         </template>
 
+        <n-form-item label="上传文件夹">
+          <div style="display: flex; gap: 8px; width: 100%">
+            <n-input v-model:value="(form.config as any).upload_dir" placeholder="留空为存储根目录" />
+            <n-button :disabled="!form.id" @click="openDirPicker" style="flex-shrink: 0">浏览</n-button>
+          </div>
+        </n-form-item>
+
         <!-- 移动云盘网页端登录：短信验证码 / 账号密码 / 扫码 -->
         <n-card v-if="form.type === 'yun139'" size="small" class="yun139-login-card">
           <template #header>
@@ -452,6 +502,29 @@ onBeforeUnmount(() => {
         </n-form-item>
       </n-form>
     </n-modal>
+
+    <!-- 上传文件夹选择 -->
+    <n-modal v-model:show="showDirPicker" preset="card" title="选择上传文件夹" style="width: 520px; max-width: 92vw">
+      <div class="dir-picker">
+        <div class="dir-bar">
+          <n-button size="tiny" @click="goParent" :disabled="dirPath === '/'">上一级</n-button>
+          <span class="dir-path">{{ dirPath }}</span>
+        </div>
+        <n-spin :show="dirLoading">
+          <div v-if="dirList.length" class="dir-list">
+            <div v-for="dir in dirList" :key="dir.path" class="dir-item" @click="enterDir(dir)">
+              <n-icon><Icon icon="material-symbols:folder" :width="20" /></n-icon>
+              <span class="dir-name">{{ dir.name }}</span>
+            </div>
+          </div>
+          <div v-else class="dir-empty">该目录下没有子文件夹</div>
+        </n-spin>
+      </div>
+      <template #footer>
+        <n-button @click="showDirPicker = false">取消</n-button>
+        <n-button type="primary" @click="pickDir">使用此文件夹</n-button>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -492,5 +565,56 @@ h2 { margin-bottom: 16px; }
 .qr-status {
   font-size: 12px;
   color: #666;
+}
+
+.dir-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 220px;
+}
+
+.dir-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dir-path {
+  font-size: 13px;
+  color: #666;
+  word-break: break-all;
+}
+
+.dir-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dir-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.dir-item:hover {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.dir-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dir-empty {
+  text-align: center;
+  color: #999;
+  padding: 40px 0;
 }
 </style>

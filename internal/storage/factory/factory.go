@@ -31,7 +31,8 @@ func Build(spec TargetSpec) (storage.Backend, error) {
 	switch spec.Type {
 	case storage.StorageLocal:
 		var cfg struct {
-			BasePath string `json:"base_path"`
+			BasePath  string `json:"base_path"`
+			UploadDir string `json:"upload_dir"`
 		}
 		if err := json.Unmarshal(spec.Config, &cfg); err != nil {
 			return nil, fmt.Errorf("parse local config: %w", err)
@@ -39,7 +40,7 @@ func Build(spec TargetSpec) (storage.Backend, error) {
 		if cfg.BasePath == "" {
 			return nil, fmt.Errorf("local storage missing base_path")
 		}
-		return local.New(spec.ID, spec.Name, cfg.BasePath)
+		return local.New(spec.ID, spec.Name, cfg.BasePath, cfg.UploadDir)
 
 	case storage.StorageWebDAV:
 		var cfg webdav.Config
