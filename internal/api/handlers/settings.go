@@ -11,10 +11,13 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/musicflow/musicflow/internal/db/models"
+	"github.com/musicflow/musicflow/internal/source"
 	"github.com/musicflow/musicflow/internal/storage"
 	"github.com/musicflow/musicflow/internal/storage/factory"
+	"github.com/musicflow/musicflow/internal/telegram"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // StorageHandler 存储目标处理器
@@ -156,13 +159,15 @@ func (h *StorageHandler) Browse(c *fiber.Ctx) error {
 
 // SourceHandler 音乐源配置处理器
 type SourceHandler struct {
-	db  *gorm.DB
-	log *zap.Logger
+	db         *gorm.DB
+	aggregator *source.Aggregator // 配置变更时热更新聚合器
+	mtMgr      *telegram.MTProtoManager
+	log        *zap.Logger
 }
 
 // NewSourceHandler 创建音乐源处理器
-func NewSourceHandler(db *gorm.DB, log *zap.Logger) *SourceHandler {
-	return &SourceHandler{db: db, log: log}
+func NewSourceHandler(db *gorm.DB, aggregator *source.Aggregator, mtMgr *telegram.MTProtoManager, log *zap.Logger) *SourceHandler {
+	return &SourceHandler{db: db, aggregator: aggregator, mtMgr: mtMgr, log: log}
 }
 
 func (h *SourceHandler) List(c *fiber.Ctx) error {
@@ -198,6 +203,14 @@ func (h *SourceHandler) Create(c *fiber.Ctx) error {
 	if err := h.db.Create(&src).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
 	}
+	// 创建后热注册到聚合器，无需重启即可使用
+	if body.Enabled {
+		if ms, err := h.buildMusicSource(src); err != nil {
+			h.log.Warn("register music source failed", zap.String("name", src.Name), zap.Error(err))
+		} else {
+			h.aggregator.Register(ms)
+		}
+	}
 	return c.Status(201).JSON(fiber.Map{"data": src})
 }
 
@@ -214,20 +227,47 @@ func (h *SourceHandler) Update(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": true, "message": "invalid request"})
 	}
 
+	// 记录旧名称用于热更新移除
+	var old models.MusicSourceConfig
+	if err := h.db.First(&old, "id = ?", id).Error; err == nil {
+		h.aggregator.Remove(old.Name)
+	}
+
 	configJSON, _ := json.Marshal(body.Config)
 
-	h.db.Model(&models.MusicSourceConfig{}).Where("id = ?", id).Updates(map[string]interface{}{
+	if err := h.db.Model(&models.MusicSourceConfig{}).Where("id = ?", id).Updates(map[string]interface{}{
 		"name":     body.Name,
 		"type":     body.Type,
 		"priority": body.Priority,
 		"enabled":  body.Enabled,
 		"config":   models.JSON(configJSON),
-	})
+	}).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
+	}
+	// 更新后重建并热注册
+	if body.Enabled {
+		ms, err := h.buildMusicSource(models.MusicSourceConfig{
+			Name:     body.Name,
+			Type:     body.Type,
+			Priority: body.Priority,
+			Config:   models.JSON(configJSON),
+		})
+		if err != nil {
+			h.log.Warn("register music source failed", zap.String("name", body.Name), zap.Error(err))
+		} else {
+			h.aggregator.Register(ms)
+		}
+	}
 	return c.JSON(fiber.Map{"message": "updated"})
 }
 
 func (h *SourceHandler) Delete(c *fiber.Ctx) error {
-	h.db.Delete(&models.MusicSourceConfig{}, "id = ?", c.Params("id"))
+	id := c.Params("id")
+	var src models.MusicSourceConfig
+	if err := h.db.First(&src, "id = ?", id).Error; err == nil {
+		h.aggregator.Remove(src.Name)
+	}
+	h.db.Delete(&models.MusicSourceConfig{}, "id = ?", id)
 	return c.JSON(fiber.Map{"message": "deleted"})
 }
 
@@ -245,6 +285,18 @@ func (h *SourceHandler) Test(c *fiber.Ctx) error {
 	}
 
 	baseURL, _ := cfg["base_url"].(string)
+	if baseURL == "" && src.Type == "qq" {
+		// QQ 音乐源：校验 Cookie 有效性
+		var qcfg source.QQConfig
+		if err := json.Unmarshal(src.Config, &qcfg); err != nil {
+			return c.JSON(fiber.Map{"success": false, "message": "invalid qq config"})
+		}
+		qs := source.NewQQSource(qcfg, nil, h.log)
+		if qs.IsAvailable(c.Context()) {
+			return c.JSON(fiber.Map{"success": true, "message": "QQ 音乐 Cookie 有效"})
+		}
+		return c.JSON(fiber.Map{"success": false, "message": "QQ 音乐 Cookie 无效或无法访问，请重新登录 y.qq.com 获取"})
+	}
 	if baseURL == "" {
 		return c.JSON(fiber.Map{"success": false, "message": "no base_url in config"})
 	}
@@ -257,6 +309,99 @@ func (h *SourceHandler) Test(c *fiber.Ctx) error {
 	resp.Body.Close()
 
 	return c.JSON(fiber.Map{"success": true, "message": fmt.Sprintf("connected, status: %d", resp.StatusCode)})
+}
+
+// GetQQQuota 获取 QQ 音乐源本月下载额度使用情况（本地统计，参考值）
+func (h *SourceHandler) GetQQQuota(c *fiber.Ctx) error {
+	name := c.Query("name")
+	ym := time.Now().Format("200601")
+	used, limit := 0, 300
+	if name != "" {
+		var q models.QQQuota
+		if err := h.db.First(&q, "id = ?", name+"_"+ym).Error; err == nil {
+			used, limit = q.Count, q.Limit
+		}
+	}
+	return c.JSON(fiber.Map{"data": fiber.Map{
+		"name":  name,
+		"month": ym,
+		"used":  used,
+		"limit": limit,
+	}})
+}
+
+// buildMusicSource 由数据库配置构建音乐源实例（配置变更热更新用）
+func (h *SourceHandler) buildMusicSource(m models.MusicSourceConfig) (source.MusicSource, error) {
+	switch m.Type {
+	case "custom_api":
+		var cfg source.CustomAPIConfig
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Name == "" {
+			cfg.Name = m.Name
+		}
+		cfg.Priority = m.Priority
+		return source.NewCustomAPISource(cfg, h.log), nil
+	case "netease":
+		var cfg source.NeteaseConfig
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Name == "" {
+			cfg.Name = m.Name
+		}
+		cfg.Priority = m.Priority
+		return source.NewNeteaseSource(cfg, h.log), nil
+	case "meting":
+		var cfg source.MetingConfig
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Name == "" {
+			cfg.Name = m.Name
+		}
+		cfg.Priority = m.Priority
+		return source.NewMetingSource(cfg, h.log), nil
+	case "tgbot":
+		var cfg source.TGBotSourceConfig
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Name == "" {
+			cfg.Name = m.Name
+		}
+		cfg.Priority = m.Priority
+		return source.NewTGBotSource(cfg, h.mtMgr, h.log), nil
+	case "qq":
+		var cfg source.QQConfig
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Name == "" {
+			cfg.Name = m.Name
+		}
+		cfg.Priority = m.Priority
+		return source.NewQQSource(cfg, &QuotaRecorder{db: h.db}, h.log), nil
+	default:
+		return nil, fmt.Errorf("unknown music source type: %s", m.Type)
+	}
+}
+
+// QuotaRecorder 实现 source.DownloadRecorder：按「源名+年月」累计下载次数（本地参考统计）
+type QuotaRecorder struct{ db *gorm.DB }
+
+// NewQuotaRecorder 创建下载额度计数器
+func NewQuotaRecorder(db *gorm.DB) *QuotaRecorder { return &QuotaRecorder{db: db} }
+
+// RecordDownload 当月下载次数 +1（跨月自动新建记录）
+func (r *QuotaRecorder) RecordDownload(ctx context.Context, sourceName string, limit int) error {
+	ym := time.Now().Format("200601")
+	id := sourceName + "_" + ym
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{"count": gorm.Expr("count + 1"), "updated_at": time.Now()}),
+	}).Create(&models.QQQuota{ID: id, SourceName: sourceName, YearMonth: ym, Count: 1, Limit: limit}).Error
 }
 
 // SettingsHandler 系统设置处理器

@@ -50,6 +50,7 @@ func Init(cfg *config.DatabaseConfig, log *zap.Logger) (*gorm.DB, error) {
 		&models.TGChannel{},
 		&models.TGChannelFile{},
 		&models.Setting{},
+		&models.QQQuota{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}

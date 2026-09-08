@@ -105,6 +105,18 @@ func (m *MusicSourceConfig) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// QQQuota QQ 音乐源每月下载限额本地统计（腾讯侧无公开真实剩余接口，仅作参考）
+type QQQuota struct {
+	ID         string    `json:"id" gorm:"primaryKey"` // {source_name}_{yyyymm}
+	SourceName string    `json:"source_name" gorm:"index"`
+	YearMonth  string    `json:"year_month" gorm:"index"`
+	Count      int       `json:"count"`
+	Limit      int       `json:"limit"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (QQQuota) TableName() string { return "qq_quotas" }
+
 // TGBot Telegram Bot 配置
 type TGBot struct {
 	ID          string     `json:"id" gorm:"primaryKey"`

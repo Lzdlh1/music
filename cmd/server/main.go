@@ -9,15 +9,16 @@ import (
 	"syscall"
 
 	"github.com/musicflow/musicflow/internal/api"
+	"github.com/musicflow/musicflow/internal/api/handlers"
 	"github.com/musicflow/musicflow/internal/config"
 	"github.com/musicflow/musicflow/internal/db"
 	"github.com/musicflow/musicflow/internal/db/models"
 	"github.com/musicflow/musicflow/internal/proxy"
 	"github.com/musicflow/musicflow/internal/scheduler"
+	"github.com/musicflow/musicflow/internal/telegram"
 	"github.com/musicflow/musicflow/internal/source"
 	"github.com/musicflow/musicflow/internal/storage"
 	"github.com/musicflow/musicflow/internal/storage/factory"
-	"github.com/musicflow/musicflow/internal/telegram"
 	"github.com/musicflow/musicflow/internal/worker"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -190,6 +191,18 @@ func loadMusicSources(database *gorm.DB, aggregator *source.Aggregator, mtMgr *t
 			}
 			bcfg.Priority = cfg.Priority
 			aggregator.Register(source.NewTGBotSource(bcfg, mtMgr, logger))
+			logger.Info("loaded music source", zap.String("name", cfg.Name), zap.String("type", cfg.Type))
+		case "qq":
+			var qcfg source.QQConfig
+			if err := models.UnmarshalTo(cfg.Config, &qcfg); err != nil {
+				logger.Warn("parse qq config", zap.String("id", cfg.ID), zap.Error(err))
+				continue
+			}
+			if qcfg.Name == "" {
+				qcfg.Name = cfg.Name
+			}
+			qcfg.Priority = cfg.Priority
+			aggregator.Register(source.NewQQSource(qcfg, handlers.NewQuotaRecorder(database), logger))
 			logger.Info("loaded music source", zap.String("name", cfg.Name), zap.String("type", cfg.Type))
 		default:
 			logger.Warn("unknown music source type", zap.String("type", cfg.Type), zap.String("id", cfg.ID))

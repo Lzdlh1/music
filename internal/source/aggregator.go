@@ -31,6 +31,23 @@ func (a *Aggregator) Register(src MusicSource) {
 	a.log.Info("music source registered", zap.String("source", src.Name()), zap.Int("priority", src.Priority()))
 }
 
+// Remove 按名称移除已注册的音乐源（用于配置热更新）
+func (a *Aggregator) Remove(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	old := len(a.sources)
+	out := a.sources[:0]
+	for _, s := range a.sources {
+		if s.Name() != name {
+			out = append(out, s)
+		}
+	}
+	a.sources = out
+	if len(out) != old {
+		a.log.Info("music source removed", zap.String("source", name))
+	}
+}
+
 // Sources 获取所有已注册源
 func (a *Aggregator) Sources() []MusicSource {
 	a.mu.RLock()

@@ -162,12 +162,13 @@ func (s *Server) setupRoutes() {
 	api.Post("/yun139/qr/poll", yun139Handler.PollQR)
 
 	// 音乐源配置
-	sourceHandler := handlers.NewSourceHandler(s.db, s.log)
+	sourceHandler := handlers.NewSourceHandler(s.db, s.aggregator, s.mtMgr, s.log)
 	api.Get("/sources", sourceHandler.List)
 	api.Post("/sources", sourceHandler.Create)
 	api.Put("/sources/:id", sourceHandler.Update)
 	api.Delete("/sources/:id", sourceHandler.Delete)
 	api.Post("/sources/:id/test", sourceHandler.Test)
+	api.Get("/sources/qq/quota", sourceHandler.GetQQQuota)
 
 	// 系统设置
 	settingsHandler := handlers.NewSettingsHandler(s.db, s.log)

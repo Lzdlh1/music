@@ -4,13 +4,15 @@ import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem,
   NInput, NInputNumber, NSwitch, NSelect, useMessage, NPopconfirm
 } from 'naive-ui'
-import { listSources, createSource, updateSource, deleteSource, testSource } from '@/api/source'
+import { listSources, createSource, updateSource, deleteSource, testSource, getQQQuota } from '@/api/source'
 import type { MusicSourceConfig } from '@/types'
 
 const message = useMessage()
 const sources = ref<MusicSourceConfig[]>([])
 const showModal = ref(false)
 const editing = ref<MusicSourceConfig | null>(null)
+/** QQ 源本月配额统计 { 源名: {used, limit} } */
+const quotas = ref<Record<string, { used: number; limit: number }>>({})
 
 const form = ref({
   name: '',
@@ -23,6 +25,7 @@ const form = ref({
     timeout: 30,
     music_source: 'netease',
     cookie: '',
+    limit: 300,
   },
 })
 
@@ -30,6 +33,7 @@ const typeOptions = [
   { label: 'Meting 采集站', value: 'meting' },
   { label: '自定义 API', value: 'custom_api' },
   { label: '网易云 (NeteaseCloudMusicApi)', value: 'netease' },
+  { label: 'QQ 音乐 (直链/VIP)', value: 'qq' },
 ]
 
 const metingSourceOptions = [
@@ -45,13 +49,24 @@ const metingSourceOptions = [
 async function loadSources() {
   const res = await listSources()
   sources.value = res.data.data || []
+  // 加载 QQ 源本月配额
+  for (const s of sources.value) {
+    if (s.type !== 'qq') continue
+    try {
+      const qr = await getQQQuota(s.name)
+      const d = qr.data.data
+      quotas.value[s.name] = { used: d?.used || 0, limit: d?.limit || 300 }
+    } catch {
+      /* 忽略单个源配额加载失败 */
+    }
+  }
 }
 
 onMounted(loadSources)
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', type: 'meting', priority: 0, enabled: true, config: { base_url: '', api_key: '', timeout: 30, music_source: 'netease', cookie: '' } }
+  form.value = { name: '', type: 'meting', priority: 0, enabled: true, config: { base_url: '', api_key: '', timeout: 30, music_source: 'netease', cookie: '', limit: 300 } }
   showModal.value = true
 }
 
@@ -69,6 +84,7 @@ function openEdit(src: MusicSourceConfig) {
       timeout: cfg.timeout || 30,
       music_source: cfg.music_source || 'netease',
       cookie: cfg.cookie || '',
+      limit: cfg.limit || 300,
     },
   }
   showModal.value = true
@@ -125,6 +141,11 @@ async function handleTest(id: string) {
             </n-tag>
             <n-tag v-if="!src.enabled" size="tiny" type="warning" round style="margin-left: 4px;">已禁用</n-tag>
             <span style="margin-left: 8px; color: #999; font-size: 12px;">优先级: {{ src.priority }}</span>
+            <template v-if="src.type === 'qq'">
+              <n-tag size="tiny" type="info" round style="margin-left: 8px;">
+                本月已用 {{ quotas[src.name]?.used ?? 0 }} / {{ quotas[src.name]?.limit ?? 300 }}
+              </n-tag>
+            </template>
           </div>
           <n-space>
             <n-button size="tiny" @click="handleTest(src.id)">测试</n-button>
@@ -152,7 +173,7 @@ async function handleTest(id: string) {
         <n-form-item label="类型">
           <n-select v-model:value="form.type" :options="typeOptions" />
         </n-form-item>
-        <n-form-item label="API 地址">
+        <n-form-item v-if="form.type !== 'qq'" label="API 地址">
           <n-input v-model:value="form.config.base_url" :placeholder="form.type === 'meting' ? 'https://music-api.gdstudio.xyz/api.php' : 'https://api.example.com'" />
         </n-form-item>
         <n-form-item v-if="form.type === 'meting'" label="音乐平台">
@@ -163,6 +184,19 @@ async function handleTest(id: string) {
         </n-form-item>
         <n-form-item v-if="form.type === 'netease'" label="Cookie">
           <n-input v-model:value="form.config.cookie" type="textarea" :rows="2" placeholder="可选，登录后可获取更高音质" />
+        </n-form-item>
+        <n-form-item v-if="form.type === 'qq'" label="QQ Cookie">
+          <n-input
+            v-model:value="form.config.cookie"
+            type="textarea"
+            :rows="3"
+            placeholder="浏览器登录 y.qq.com 后按 F12 复制 Cookie（需含 uin=、skey=），VIP 账号可获取 FLAC/Hi-Res 直链"
+          />
+          <template #feedback>下载的歌曲为标准音频文件，无需解码，可永久播放</template>
+        </n-form-item>
+        <n-form-item v-if="form.type === 'qq'" label="月限额">
+          <n-input-number v-model:value="form.config.limit" :min="1" :max="9999" style="width: 160px;" />
+          <span style="margin-left: 8px; color: #999; font-size: 12px;">豪华绿钻为 300/月（本地参考统计）</span>
         </n-form-item>
         <n-form-item label="超时(秒)">
           <n-input-number v-model:value="form.config.timeout" :min="5" :max="120" />

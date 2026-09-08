@@ -219,6 +219,11 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 		})
 	}
 
+	// 记录来源下载配额（如 QQ 音乐每月限额）：只在下载成功时计数
+	if err == nil {
+		w.recordSourceDownload(ctx, trackInfo.Source)
+	}
+
 	// 4. 元数据处理（标签、封面、歌词）
 	onProgress(scheduler.StatusProcessing, scheduler.TaskProgress{Stage: "processing", Percent: 65})
 
@@ -460,6 +465,26 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 	onProgress(scheduler.StatusDone, scheduler.TaskProgress{Stage: "done", Percent: 100})
 
 	return nil
+}
+
+// recordRecorder 由音乐源实现的下载计数接口（目前 QQ 源提供）
+type recordRecorder interface {
+	RecordDownload(ctx context.Context) error
+}
+
+// recordSourceDownload 对匹配的源记录一次成功下载（QQ 音乐每月限额本地统计）
+func (w *Worker) recordSourceDownload(ctx context.Context, sourceName string) {
+	for _, src := range w.aggregator.Sources() {
+		if src.Name() != sourceName {
+			continue
+		}
+		if r, ok := src.(recordRecorder); ok {
+			if err := r.RecordDownload(ctx); err != nil {
+				w.log.Warn("record source download quota failed", zap.String("source", sourceName), zap.Error(err))
+			}
+		}
+		return
+	}
 }
 
 // downloadFile 下载文件到本地路径
