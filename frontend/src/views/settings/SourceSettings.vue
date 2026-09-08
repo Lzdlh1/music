@@ -190,9 +190,9 @@ async function handleTest(id: string) {
             v-model:value="form.config.cookie"
             type="textarea"
             :rows="3"
-            placeholder="浏览器登录 y.qq.com 后按 F12 复制 Cookie（需含 uin=、skey=），VIP 账号可获取 FLAC/Hi-Res 直链"
+            placeholder="浏览器登录 y.qq.com 后按 F12 复制 Cookie（需含 uin=、qm_keyst/qqmusic_key、psrf_qqaccess_token、psrf_qqrefresh_token），VIP 账号可获取 FLAC/Hi-Res 直链"
           />
-          <template #feedback>下载的歌曲为标准音频文件，无需解码，可永久播放</template>
+          <template #feedback>含 psrf_qqrefresh_token 时系统将每日自动续期 musickey，登录态长期有效；下载的歌曲为标准音频文件，无需解码，可永久播放</template>
         </n-form-item>
         <n-form-item v-if="form.type === 'qq'" label="月限额">
           <n-input-number v-model:value="form.config.limit" :min="1" :max="9999" style="width: 160px;" />

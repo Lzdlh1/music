@@ -311,6 +311,79 @@ func (h *SourceHandler) Test(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": fmt.Sprintf("connected, status: %d", resp.StatusCode)})
 }
 
+// RefreshQQCookies 遍历所有启用的 QQ 源，用 refresh_token 续期 musickey。
+// 变化时写回数据库并热更新聚合器中的运行实例（无需重启即可长期有效）。
+func (h *SourceHandler) RefreshQQCookies(ctx context.Context) error {
+	var sources []models.MusicSourceConfig
+	if err := h.db.Where("type = ? AND enabled = ?", "qq", true).Find(&sources).Error; err != nil {
+		return err
+	}
+	for _, src := range sources {
+		var cfg source.QQConfig
+		if err := json.Unmarshal(src.Config, &cfg); err != nil {
+			h.log.Warn("qq refresh: parse config failed", zap.String("id", src.ID), zap.Error(err))
+			continue
+		}
+		if cfg.Name == "" {
+			cfg.Name = src.Name
+		}
+		cfg.Priority = src.Priority
+		qs := source.NewQQSource(cfg, &QuotaRecorder{db: h.db}, h.log)
+		newCookie, changed, err := qs.RefreshCookie(ctx)
+		if err != nil {
+			h.log.Warn("qq cookie refresh failed", zap.String("name", cfg.Name), zap.Error(err))
+			continue
+		}
+		if !changed {
+			if !containsQQRefreshToken(newCookie) {
+				h.log.Warn("qq cookie lacks refresh_token(psrf_qqrefresh_token), cannot auto-renew; re-copy full cookie after login",
+					zap.String("name", cfg.Name))
+			}
+			continue
+		}
+		// 写回数据库，保留其余配置字段
+		var cfgMap map[string]interface{}
+		if err := json.Unmarshal(src.Config, &cfgMap); err != nil {
+			cfgMap = map[string]interface{}{}
+		}
+		cfgMap["cookie"] = newCookie
+		newJSON, _ := json.Marshal(cfgMap)
+		if err := h.db.Model(&models.MusicSourceConfig{}).Where("id = ?", src.ID).Update("config", models.JSON(newJSON)).Error; err != nil {
+			h.log.Warn("qq cookie persist failed", zap.String("name", cfg.Name), zap.Error(err))
+			continue
+		}
+		// 热更新运行实例（旧实例含旧 musickey）
+		h.aggregator.Remove(src.Name)
+		if ms, err := h.buildMusicSource(models.MusicSourceConfig{
+			Name:     src.Name,
+			Type:     src.Type,
+			Priority: src.Priority,
+			Enabled:  true,
+			Config:   models.JSON(newJSON),
+		}); err != nil {
+			h.log.Warn("qq cookie hot-reload failed", zap.String("name", src.Name), zap.Error(err))
+		} else {
+			h.aggregator.Register(ms)
+			h.log.Info("qq cookie auto-renewed & hot-reloaded", zap.String("name", src.Name))
+		}
+	}
+	return nil
+}
+
+// containsQQRefreshToken 判断 Cookie 是否包含刷新所需凭证（决定能否自动续期）
+func containsQQRefreshToken(cookie string) bool {
+	if cookie == "" {
+		return false
+	}
+	for _, part := range strings.Split(cookie, ";") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), "psrf_qqrefresh_token") && kv[1] != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // GetQQQuota 获取 QQ 音乐源本月下载额度使用情况（本地统计，参考值）
 func (h *SourceHandler) GetQQQuota(c *fiber.Ctx) error {
 	name := c.Query("name")

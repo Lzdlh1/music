@@ -14,6 +14,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -22,6 +23,7 @@ import (
 // QQSource QQ 音乐源
 type QQSource struct {
 	name     string
+	mu       sync.RWMutex // 保护 cookie 读写（后台刷新与请求并发）
 	cookie   string
 	limit    int      // 每月下载限额（本地统计参考值）
 	priority int
@@ -76,7 +78,7 @@ func (q *QQSource) Priority() int    { return q.priority }
 
 // IsAvailable 校验 Cookie 存在且腾讯音乐域名可访问
 func (q *QQSource) IsAvailable(ctx context.Context) bool {
-	if q.cookie == "" {
+	if q.currentCookie() == "" {
 		return false
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://y.qq.com/", nil)
@@ -357,6 +359,87 @@ func (q *QQSource) RecordDownload(ctx context.Context) error {
 	return q.recorder.RecordDownload(ctx, q.name, q.limit)
 }
 
+// RefreshCookie 使用 Cookie 中的 refresh_token/access_token 续期 musickey（实现长期有效）。
+// 成功后更新内部 Cookie 并返回 (新Cookie, 是否变化, 错误)。缺少刷新凭证（未包含
+// psrf_qqaccess_token/psrf_qqrefresh_token）时返回原 Cookie 且不报错，交由调用方提示。
+func (q *QQSource) RefreshCookie(ctx context.Context) (string, bool, error) {
+	cookie := q.currentCookie()
+	if cookie == "" {
+		return cookie, false, nil
+	}
+	uin := qqUin(cookie)
+	key := qqMusicKey(cookie)
+	accessToken := cookiesGet(cookie, "psrf_qqaccess_token")
+	refreshToken := cookiesGet(cookie, "psrf_qqrefresh_token")
+	if uin == "" || key == "" || accessToken == "" || refreshToken == "" {
+		return cookie, false, nil
+	}
+
+	uinInt, _ := strconv.ParseInt(uin, 10, 64)
+	gtk := qqHash33(key, 5381)
+	payload := map[string]interface{}{
+		"comm": map[string]interface{}{
+			"ct": 24, "cv": 4747474, "platform": "yqq.json", "chid": "0",
+			"uin": uin, "g_tk": gtk, "g_tk_new_20200303": gtk,
+			"format": "json", "inCharset": "utf-8", "outCharset": "utf-8",
+			"notice": 0, "need_new_code": 1, "tmeLoginType": 2,
+		},
+		"req_0": map[string]interface{}{
+			"module": "music.login.LoginServer",
+			"method": "Login",
+			"param": map[string]interface{}{
+				"openid":        "",
+				"access_token":  accessToken,
+				"refresh_token": refreshToken,
+				"expired_in":    0,
+				"musicid":       uinInt,
+				"musickey":      key,
+				"refresh_key":   "",
+				"loginMode":     2,
+			},
+		},
+	}
+
+	body, err := q.postMusicu(ctx, payload)
+	if err != nil {
+		return cookie, false, err
+	}
+	var resp struct {
+		Req0 struct {
+			Code int `json:"code"`
+			Data struct {
+				Musickey       string `json:"musickey"`
+				KeyExpiresIn   int64  `json:"keyExpiresIn"`
+				Createtime     int64  `json:"musickeyCreateTime"`
+				RefreshToken   string `json:"refresh_token"`
+			} `json:"data"`
+		} `json:"req_0"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return cookie, false, fmt.Errorf("parse qq refresh response: %w", err)
+	}
+	if resp.Req0.Code != 0 {
+		return cookie, false, fmt.Errorf("qq refresh error %d", resp.Req0.Code)
+	}
+	newKey := resp.Req0.Data.Musickey
+	if newKey == "" {
+		return cookie, false, fmt.Errorf("qq refresh returned empty musickey")
+	}
+	if newKey == key {
+		q.log.Debug("qq musickey unchanged", zap.String("source", q.name))
+		return cookie, false, nil
+	}
+
+	// 替换 Cookie 中的旧 musickey（qm_keyst / qqmusic_key 同步更新）
+	cookie = qqReplaceCookie(cookie, "qm_keyst", newKey)
+	cookie = qqReplaceCookie(cookie, "qqmusic_key", newKey)
+	q.setCookie(cookie)
+	q.log.Info("qq musickey auto-refreshed",
+		zap.String("source", q.name),
+		zap.Int64("expires_in", resp.Req0.Data.KeyExpiresIn))
+	return cookie, true, nil
+}
+
 // ---------- 歌词 ----------
 
 func (q *QQSource) GetLyrics(ctx context.Context, id string) (*LyricsResult, error) {
@@ -419,17 +502,22 @@ func (q *QQSource) musicu(ctx context.Context, req map[string]interface{}) ([]by
 	comm := map[string]interface{}{
 		"ct":     19,
 		"cv":     1843,
-		"uin":    qqUin(q.cookie),
+		"uin":    qqUin(q.currentCookie()),
 		"format": "json",
 	}
 	// 新版登录态：VPN 音质需要 comm.authst（musicKey，来自浏览器 qm_keyst/qqmusic_key）
-	if key := qqMusicKey(q.cookie); key != "" {
+	if key := qqMusicKey(q.currentCookie()); key != "" {
 		comm["authst"] = key
 	}
 	payload := map[string]interface{}{
 		"comm":  comm,
 		"req_0": req,
 	}
+	return q.postMusicu(ctx, payload)
+}
+
+// postMusicu 向腾讯音乐统一网关发送 payload（POST JSON + 浏览器伪装头 + Cookie）
+func (q *QQSource) postMusicu(ctx context.Context, payload map[string]interface{}) ([]byte, error) {
 	js, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -443,8 +531,8 @@ func (q *QQSource) musicu(ctx context.Context, req map[string]interface{}) ([]by
 	hreq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 	hreq.Header.Set("Referer", "https://y.qq.com/")
 	hreq.Header.Set("Origin", "https://y.qq.com")
-	if q.cookie != "" {
-		hreq.Header.Set("Cookie", q.cookie)
+	if cookie := q.currentCookie(); cookie != "" {
+		hreq.Header.Set("Cookie", cookie)
 	}
 
 	resp, err := q.client.Do(hreq)
@@ -565,6 +653,44 @@ func cookiesGet(cookie, name string) string {
 		}
 	}
 	return ""
+}
+
+// currentCookie 线程安全读取当前 Cookie
+func (q *QQSource) currentCookie() string {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.cookie
+}
+
+// setCookie 线程安全更新 Cookie
+func (q *QQSource) setCookie(c string) {
+	q.mu.Lock()
+	q.cookie = c
+	q.mu.Unlock()
+}
+
+// qqReplaceCookie 替换 Cookie 串中指定键的值（不存在则原样保留）
+func qqReplaceCookie(cookie, name, newVal string) string {
+	parts := strings.Split(cookie, ";")
+	rebuilt := make([]string, 0, len(parts))
+	for _, p := range parts {
+		kv := strings.SplitN(strings.TrimSpace(p), "=", 2)
+		if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), name) {
+			rebuilt = append(rebuilt, name+"="+newVal)
+		} else {
+			rebuilt = append(rebuilt, p)
+		}
+	}
+	return strings.Join(rebuilt, ";")
+}
+
+// qqHash33 腾讯 g_tk 计算（与网页端 hash33 算法一致）
+func qqHash33(s string, seed int) int {
+	hash := seed
+	for i := 0; i < len(s); i++ {
+		hash += (hash << 5) + int(s[i])
+	}
+	return hash & 0x7fffffff
 }
 
 // qqHighestQuality 由歌曲各音质大小字段推断可用最高音质

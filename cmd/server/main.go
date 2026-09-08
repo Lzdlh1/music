@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/musicflow/musicflow/internal/api"
 	"github.com/musicflow/musicflow/internal/api/handlers"
@@ -90,6 +91,27 @@ func main() {
 
 	// 从数据库加载并注册已配置的音乐源
 	loadMusicSources(database, aggregator, mtMgr, logger)
+
+	// 启动 QQ 音乐 Cookie 自动续期：每天凌晨刷新一次 musickey，保持登录态长期有效
+	go func() {
+		srcHandler := handlers.NewSourceHandler(database, aggregator, mtMgr, logger)
+		first := time.NewTimer(30 * time.Second) // 启动后先等待片刻，避免与启动流程抖动
+		daily := time.NewTicker(24 * time.Hour)
+		defer first.Stop()
+		defer daily.Stop()
+		run := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := srcHandler.RefreshQQCookies(ctx); err != nil {
+				logger.Warn("qq cookie auto renew failed", zap.Error(err))
+			}
+		}
+		<-first.C
+		run()
+		for range daily.C {
+			run()
+		}
+	}()
 
 	// 恢复未完成的任务
 	sched.RecoverTasks()
