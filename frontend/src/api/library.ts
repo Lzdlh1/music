@@ -1,9 +1,9 @@
-import api from './index'
+import api, { streamUrl } from './index'
 import type { ApiResponse, LibraryItem } from '@/types'
 
-export function listLibrary(q?: string, page = 1, size = 50) {
+export function listLibrary(q?: string, page = 1, size = 50, kind?: string) {
   return api.get<ApiResponse<LibraryItem[]>>('/library', {
-    params: { q, page, size },
+    params: { q, page, size, kind },
   })
 }
 
@@ -15,9 +15,9 @@ export function deleteLibraryItem(id: string) {
   return api.delete(`/library/${id}`)
 }
 
-/** 音乐库歌曲流播放 URL（同源，可直接用于 <audio>） */
+/** 音乐库歌曲流播放 URL（同源，可直接用于 <audio>；query token 鉴权） */
 export function libraryStreamUrl(id: string) {
-  return `/api/v1/library/${id}/stream`
+  return streamUrl(`/api/v1/library/${id}/stream`)
 }
 
 /** 获取音乐库歌曲歌词（LRC） */

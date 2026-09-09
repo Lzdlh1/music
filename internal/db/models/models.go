@@ -8,12 +8,54 @@ import (
 	"gorm.io/gorm"
 )
 
+// User 平台用户（角色：admin 管理员 / user 普通用户）
+type User struct {
+	ID             string    `json:"id" gorm:"primaryKey"`
+	Username       string    `json:"username" gorm:"uniqueIndex;not null"`
+	PasswordHash   string    `json:"-"` // bcrypt，不序列化
+	Role           string    `json:"role" gorm:"default:user"` // admin / user
+	DownloadDir    string    `json:"download_dir"`             // 用户默认下载目录（相对存储根）
+	DefaultStorage string    `json:"default_storage"`          // 用户默认存储目标 ID
+	QQLimit        int       `json:"qq_limit" gorm:"default:300"` // QQ 每月下载限额
+	Disabled       bool      `json:"disabled" gorm:"default:false"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (User) TableName() string { return "users" }
+
+func (u *User) BeforeCreate(tx *gorm.DB) error {
+	if u.ID == "" {
+		u.ID = uuid.New().String()
+	}
+	return nil
+}
+
+// InviteKey 一次性邀请注册码（管理员生成，用户凭码注册）
+type InviteKey struct {
+	ID        string     `json:"id" gorm:"primaryKey"`
+	Code      string     `json:"code" gorm:"uniqueIndex;not null"`
+	CreatedBy string     `json:"created_by"`
+	UsedBy    string     `json:"used_by,omitempty"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+func (InviteKey) TableName() string { return "invite_keys" }
+
+func (k *InviteKey) BeforeCreate(tx *gorm.DB) error {
+	if k.ID == "" {
+		k.ID = uuid.New().String()
+	}
+	return nil
+}
+
 // Task 下载任务
 type Task struct {
 	ID             string     `json:"id" gorm:"primaryKey"`
 	Type           string     `json:"type" gorm:"not null"`   // SINGLE, BATCH, PLAYLIST
 	Status         string     `json:"status" gorm:"not null"` // PENDING, FETCHING_META, DOWNLOADING, PROCESSING, UPLOADING, DONE, FAILED, PAUSED, CANCELLED
 	Priority       int        `json:"priority" gorm:"default:0"`
+	OwnerID        string     `json:"owner_id" gorm:"index"` // 创建者用户 ID（空=管理员/系统）
 	TrackInfo      JSON       `json:"track_info" gorm:"type:json;not null"`
 	SelectedSource JSON       `json:"selected_source,omitempty" gorm:"type:json"`
 	UploadTargets  JSON       `json:"upload_targets,omitempty" gorm:"type:json"`
@@ -35,9 +77,11 @@ func (t *Task) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// Library 音乐库记录
+// Library 音乐库记录（kind：download 已下载 / favorite 收藏在线，owner 隔离）
 type Library struct {
 	ID            string    `json:"id" gorm:"primaryKey"`
+	OwnerID       string    `json:"owner_id" gorm:"index"` // 归属用户 ID（空=全局/管理员下载）
+	Kind          string    `json:"kind" gorm:"default:download"` // download / favorite
 	Title         string    `json:"title" gorm:"not null"`
 	Artist        string    `json:"artist"`
 	Album         string    `json:"album"`
@@ -70,6 +114,7 @@ func (l *Library) BeforeCreate(tx *gorm.DB) error {
 // StorageTarget 存储目标配置
 type StorageTarget struct {
 	ID        string    `json:"id" gorm:"primaryKey"`
+	OwnerID   string    `json:"owner_id" gorm:"index"` // 归属用户（空=管理员创建的共享存储）
 	Name      string    `json:"name" gorm:"not null"`
 	Type      string    `json:"type" gorm:"not null"` // webdav, local, sftp, s3, onedrive, aliyun, gdrive
 	Config    JSON      `json:"config" gorm:"type:json;not null"`
@@ -105,10 +150,11 @@ func (m *MusicSourceConfig) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// QQQuota QQ 音乐源每月下载限额本地统计（腾讯侧无公开真实剩余接口，仅作参考）
+// QQQuota QQ 音乐源每月下载限额本地统计（腾讯侧无公开真实剩余接口，仅作参考），按用户+源统计
 type QQQuota struct {
-	ID         string    `json:"id" gorm:"primaryKey"` // {source_name}_{yyyymm}
+	ID         string    `json:"id" gorm:"primaryKey"` // {source_name}_{user_id}_{yyyymm}
 	SourceName string    `json:"source_name" gorm:"index"`
+	UserID     string    `json:"user_id" gorm:"index"`
 	YearMonth  string    `json:"year_month" gorm:"index"`
 	Count      int       `json:"count"`
 	Limit      int       `json:"limit"`

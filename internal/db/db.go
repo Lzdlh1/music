@@ -9,6 +9,7 @@ import (
 	"github.com/musicflow/musicflow/internal/db/models"
 	"go.uber.org/zap"
 	"github.com/glebarez/sqlite"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -41,6 +42,8 @@ func Init(cfg *config.DatabaseConfig, log *zap.Logger) (*gorm.DB, error) {
 
 	// 自动迁移
 	if err := db.AutoMigrate(
+		&models.User{},
+		&models.InviteKey{},
 		&models.Task{},
 		&models.Library{},
 		&models.StorageTarget{},
@@ -58,8 +61,42 @@ func Init(cfg *config.DatabaseConfig, log *zap.Logger) (*gorm.DB, error) {
 	// 修复空 ID 的历史记录
 	fixEmptyIDs(db)
 
+	// 兼容：存在旧 single-admin 配置时，自动将其导入为管理员账号
+	bootstrapLegacyAdmin(db, log)
+
 	log.Info("database initialized", zap.String("type", cfg.Type), zap.String("dsn", cfg.DSN))
 	return db, nil
+}
+
+// bootstrapLegacyAdmin 兼容旧版单账号登录（config.yaml auth: admin/musicflow）：
+// 若 users 表为空且配置了账号密码，自动创建 admin 账号，避免旧部署升级后无法登录。
+func bootstrapLegacyAdmin(db *gorm.DB, log *zap.Logger) {
+	if db == nil {
+		return
+	}
+	var count int64
+	if err := db.Model(&models.User{}).Count(&count).Error; err != nil || count > 0 {
+		return
+	}
+	cfg := config.Get()
+	if cfg == nil || !cfg.Auth.Enabled || cfg.Auth.Username == "" {
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.Auth.Password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Warn("bootstrap legacy admin: hash password failed", zap.Error(err))
+		return
+	}
+	u := models.User{
+		Username:     cfg.Auth.Username,
+		PasswordHash: string(hash),
+		Role:         "admin",
+	}
+	if err := db.Create(&u).Error; err != nil {
+		log.Warn("bootstrap legacy admin failed", zap.Error(err))
+		return
+	}
+	log.Info("bootstrapped legacy admin", zap.String("username", cfg.Auth.Username))
 }
 
 // fixEmptyIDs 修复历史遗留的空 ID 记录

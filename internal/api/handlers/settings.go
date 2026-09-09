@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/musicflow/musicflow/internal/api/middleware"
 	"github.com/musicflow/musicflow/internal/db/models"
 	"github.com/musicflow/musicflow/internal/source"
 	"github.com/musicflow/musicflow/internal/storage"
@@ -32,10 +33,14 @@ func NewStorageHandler(mgr *storage.Manager, db *gorm.DB, log *zap.Logger) *Stor
 	return &StorageHandler{manager: mgr, db: db, log: log}
 }
 
-// List 列出存储目标
+// List 列出存储目标（普通用户仅可见自己的与管理员共享的）
 func (h *StorageHandler) List(c *fiber.Ctx) error {
 	var targets []models.StorageTarget
-	h.db.Find(&targets)
+	q := h.db
+	if me := middleware.CurrentUser(c); me != nil && me.Role == "user" {
+		q = q.Where("owner_id = ? OR owner_id = ''", me.ID)
+	}
+	q.Order("created_at DESC").Find(&targets)
 	return c.JSON(fiber.Map{"data": targets})
 }
 
@@ -56,10 +61,16 @@ func (h *StorageHandler) Create(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": true, "message": "invalid config"})
 	}
 
+	ownerID := ""
+	if me := middleware.CurrentUser(c); me != nil && me.Role == "user" {
+		ownerID = me.ID // 普通用户创建的存储归自己
+	}
+
 	target := models.StorageTarget{
 		Name:    body.Name,
 		Type:    body.Type,
 		Enabled: body.Enabled,
+		OwnerID: ownerID,
 		Config:  models.JSON(configJSON),
 	}
 	if err := h.db.Create(&target).Error; err != nil {
@@ -83,6 +94,9 @@ func (h *StorageHandler) Create(c *fiber.Ctx) error {
 // Update 更新存储目标
 func (h *StorageHandler) Update(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if ok := h.checkOwner(c, id); !ok {
+		return c.Status(403).JSON(fiber.Map{"error": true, "message": "forbidden"})
+	}
 	var body struct {
 		Name    string      `json:"name"`
 		Type    string      `json:"type"`
@@ -122,11 +136,30 @@ func (h *StorageHandler) Update(c *fiber.Ctx) error {
 // Delete 删除存储目标
 func (h *StorageHandler) Delete(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if ok := h.checkOwner(c, id); !ok {
+		return c.Status(403).JSON(fiber.Map{"error": true, "message": "forbidden"})
+	}
 	if err := h.db.Delete(&models.StorageTarget{}, "id = ?", id).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
 	}
 	h.manager.Remove(id)
 	return c.JSON(fiber.Map{"message": "deleted"})
+}
+
+// checkOwner 校验存储目标归属：管理员可操作全部；普通用户仅自己的（共享只读）
+func (h *StorageHandler) checkOwner(c *fiber.Ctx, id string) bool {
+	me := middleware.CurrentUser(c)
+	if me == nil {
+		return false
+	}
+	if me.Role == "admin" {
+		return true
+	}
+	var target models.StorageTarget
+	if err := h.db.First(&target, "id = ?", id).Error; err != nil {
+		return false
+	}
+	return target.OwnerID == me.ID
 }
 
 // Test 测试存储连接
@@ -388,18 +421,23 @@ func containsQQRefreshToken(cookie string) bool {
 func (h *SourceHandler) GetQQQuota(c *fiber.Ctx) error {
 	name := c.Query("name")
 	ym := time.Now().Format("200601")
+	userID := ""
+	if me := middleware.CurrentUser(c); me != nil {
+		userID = me.ID
+	}
 	used, limit := 0, 300
 	if name != "" {
 		var q models.QQQuota
-		if err := h.db.First(&q, "id = ?", name+"_"+ym).Error; err == nil {
+		if err := h.db.First(&q, "id = ?", name+"_"+userID+"_"+ym).Error; err == nil {
 			used, limit = q.Count, q.Limit
 		}
 	}
 	return c.JSON(fiber.Map{"data": fiber.Map{
-		"name":  name,
-		"month": ym,
-		"used":  used,
-		"limit": limit,
+		"name":   name,
+		"month":  ym,
+		"used":   used,
+		"limit":  limit,
+		"userid": userID,
 	}})
 }
 
@@ -467,14 +505,14 @@ type QuotaRecorder struct{ db *gorm.DB }
 // NewQuotaRecorder 创建下载额度计数器
 func NewQuotaRecorder(db *gorm.DB) *QuotaRecorder { return &QuotaRecorder{db: db} }
 
-// RecordDownload 当月下载次数 +1（跨月自动新建记录）
-func (r *QuotaRecorder) RecordDownload(ctx context.Context, sourceName string, limit int) error {
+// RecordDownload 当月下载次数 +1（跨月自动新建记录，按用户隔离）
+func (r *QuotaRecorder) RecordDownload(ctx context.Context, sourceName, userID string, limit int) error {
 	ym := time.Now().Format("200601")
-	id := sourceName + "_" + ym
+	id := sourceName + "_" + userID + "_" + ym
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoUpdates: clause.Assignments(map[string]interface{}{"count": gorm.Expr("count + 1"), "updated_at": time.Now()}),
-	}).Create(&models.QQQuota{ID: id, SourceName: sourceName, YearMonth: ym, Count: 1, Limit: limit}).Error
+	}).Create(&models.QQQuota{ID: id, SourceName: sourceName, UserID: userID, YearMonth: ym, Count: 1, Limit: limit}).Error
 }
 
 // SettingsHandler 系统设置处理器
@@ -550,11 +588,23 @@ func (h *LibraryHandler) List(c *fiber.Ctx) error {
 	size := c.QueryInt("size", 50)
 	search := c.Query("q")
 	sort := c.Query("sort", "created_at DESC")
+	kind := c.Query("kind") // favorite / download / 空=全部
+
+	scope := func(q *gorm.DB) *gorm.DB {
+		me := middleware.CurrentUser(c)
+		if me != nil && me.Role == "user" {
+			// 普通用户：自己的 + 管理员共享的全局下载
+			q = q.Where("owner_id = ? OR owner_id = ''", me.ID)
+		}
+		if kind != "" {
+			q = q.Where("kind = ?", kind)
+		}
+		return q
+	}
 
 	var items []models.Library
 	var total int64
-
-	query := h.db.Model(&models.Library{})
+	query := scope(h.db.Model(&models.Library{}))
 	if search != "" {
 		query = query.Where("title LIKE ? OR artist LIKE ? OR album LIKE ?",
 			"%"+search+"%", "%"+search+"%", "%"+search+"%")
@@ -570,6 +620,12 @@ func (h *LibraryHandler) Get(c *fiber.Ctx) error {
 	if err := h.db.First(&item, "id = ?", c.Params("id")).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": true, "message": "not found"})
 	}
+	// 普通用户仅能访问自己的或全局共享条目
+	if me := middleware.CurrentUser(c); me != nil && me.Role == "user" {
+		if item.OwnerID != "" && item.OwnerID != me.ID {
+			return c.Status(403).JSON(fiber.Map{"error": true, "message": "forbidden"})
+		}
+	}
 	return c.JSON(fiber.Map{"data": item})
 }
 
@@ -578,6 +634,13 @@ func (h *LibraryHandler) Delete(c *fiber.Ctx) error {
 	var item models.Library
 	// 删除前先取出记录，拿到各存储的文件路径（记录不存在时也继续删除占位）
 	_ = h.db.First(&item, "id = ?", id).Error
+
+	// 权限：管理员可删全局/任意；普通用户只能删自己的
+	if me := middleware.CurrentUser(c); me != nil && me.Role == "user" {
+		if item.ID == "" || item.OwnerID != me.ID {
+			return c.Status(403).JSON(fiber.Map{"error": true, "message": "forbidden"})
+		}
+	}
 
 	h.deleteRemoteFiles(item)
 

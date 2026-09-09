@@ -44,7 +44,7 @@ type QQConfig struct {
 
 // DownloadRecorder 下载额度计数接口（由应用层提供实现）
 type DownloadRecorder interface {
-	RecordDownload(ctx context.Context, sourceName string, limit int) error
+	RecordDownload(ctx context.Context, sourceName string, userID string, limit int) error
 }
 
 const musicuGateway = "https://u.y.qq.com/cgi-bin/musicu.fcg"
@@ -352,11 +352,11 @@ func (q *QQSource) GetDownloadURL(ctx context.Context, id string, quality Qualit
 }
 
 // RecordDownload 记录一次成功下载（由 worker 在任务下载成功后调用，计入每月限额）
-func (q *QQSource) RecordDownload(ctx context.Context) error {
+func (q *QQSource) RecordDownload(ctx context.Context, userID string) error {
 	if q.recorder == nil {
 		return nil
 	}
-	return q.recorder.RecordDownload(ctx, q.name, q.limit)
+	return q.recorder.RecordDownload(ctx, q.name, userID, q.limit)
 }
 
 // RefreshCookie 使用 Cookie 中的 refresh_token/access_token 续期 musickey（实现长期有效）。

@@ -14,6 +14,7 @@ const tabs = [
   { path: '/library', icon: 'material-symbols:library-music', label: '音乐库' },
   { path: '/cloud', icon: 'material-symbols:cloud', label: '网盘' },
   { path: '/settings', icon: 'material-symbols:settings', label: '设置' },
+  { path: '/settings/account', icon: 'material-symbols:person', label: '我的' },
 ]
 
 const activeTab = computed(() => {

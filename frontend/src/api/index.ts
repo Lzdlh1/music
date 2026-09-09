@@ -24,6 +24,9 @@ api.interceptors.response.use(
     NProgress.done()
     if (error.response?.status === 401) {
       localStorage.removeItem('mf_token')
+      localStorage.removeItem('mf_user_id')
+      localStorage.removeItem('mf_username')
+      localStorage.removeItem('mf_role')
       if (window.location.pathname !== '/login') {
         window.location.href = '/login'
       }
@@ -31,5 +34,12 @@ api.interceptors.response.use(
     return Promise.reject(error)
   },
 )
+
+/** 为需要 query token 鉴权的流媒体 URL 附加 token（<audio> 无法携带 Authorization 头） */
+export function streamUrl(path: string) {
+  const token = localStorage.getItem('mf_token')
+  const sep = path.includes('?') ? '&' : '?'
+  return token ? `${path}${sep}token=${encodeURIComponent(token)}` : path
+}
 
 export default api

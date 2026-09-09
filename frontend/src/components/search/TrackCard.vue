@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { NCard, NTag, NButton, NSpace } from 'naive-ui'
+import { NCard, NTag, NButton, NSpace, NIcon } from 'naive-ui'
+import { Icon } from '@iconify/vue'
 import type { TrackResult } from '@/types'
 
 defineProps<{
@@ -8,6 +9,8 @@ defineProps<{
 
 const emit = defineEmits<{
   download: [track: TrackResult]
+  play: [track: TrackResult]
+  favorite: [track: TrackResult]
 }>()
 
 function formatDuration(seconds: number): string {
@@ -69,6 +72,13 @@ function qualityColor(quality: number): string {
         </n-space>
       </div>
       <div class="track-actions">
+        <n-button size="small" @click="emit('play', track)">
+          试听
+        </n-button>
+        <n-button size="small" @click="emit('favorite', track)">
+          <template #icon><n-icon><Icon icon="material-symbols:favorite" /></n-icon></template>
+          收藏
+        </n-button>
         <n-button size="small" type="primary" @click="emit('download', track)">
           下载
         </n-button>

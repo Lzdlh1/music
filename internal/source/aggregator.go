@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
@@ -166,6 +167,26 @@ func (a *Aggregator) GetTrackSources(ctx context.Context, trackID string, qualit
 	})
 
 	return available, nil
+}
+
+// GetTrackDetail 按曲目 ID 从对应源获取详情（ID 格式为 "源名:rawID"）
+func (a *Aggregator) GetTrackDetail(ctx context.Context, trackID string) (*TrackDetail, error) {
+	name, _ := splitSourceID(trackID)
+	var lastErr error
+	for _, s := range a.Sources() {
+		if name != "" && !strings.HasPrefix(strings.ToLower(s.Name()), strings.ToLower(name)) {
+			continue
+		}
+		d, err := s.GetTrackDetail(ctx, trackID)
+		if err == nil && d != nil {
+			return d, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no track detail available")
 }
 
 // GetLyrics 按曲目 ID 从对应源获取歌词（ID 格式为 "源名:rawID"）

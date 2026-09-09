@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, h } from 'vue'
-import { NInput, NDataTable, NButton, NEmpty, NIcon, NSpin, NTag, useMessage } from 'naive-ui'
+import { NInput, NDataTable, NButton, NEmpty, NIcon, NSpin, NTag, NRadioGroup, NRadioButton, useMessage } from 'naive-ui'
 import { Icon } from '@iconify/vue'
 import type { LibraryItem, PlayTrack } from '@/types'
 import { listLibrary, libraryStreamUrl, deleteLibraryItem } from '@/api/library'
+import { trackStreamUrl } from '@/api/track'
+import { getMyQuota } from '@/api/users'
 import { usePlayerStore } from '@/stores/player'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
@@ -24,8 +26,10 @@ const total = ref(0)
 const loading = ref(false)
 const searchQuery = ref('')
 const page = ref(1)
+const kindFilter = ref('') // '' 全部 / download 下载 / favorite 收藏
+const myQuota = ref<{ used: number; limit: number } | null>(null)
 
-/** 将库记录转为播放轨道 */
+/** 将库记录转为播放轨道：收藏曲目从源站走 128K 在线流，下载曲目从存储播放 */
 function toPlayTrack(item: LibraryItem): PlayTrack {
   return {
     id: item.id,
@@ -34,7 +38,9 @@ function toPlayTrack(item: LibraryItem): PlayTrack {
     album: item.album || '',
     cover_url: item.cover_url,
     duration: item.duration || 0,
-    src: libraryStreamUrl(item.id),
+    src: item.kind === 'favorite' && item.source_track_id
+      ? trackStreamUrl(item.source_track_id)
+      : libraryStreamUrl(item.id),
   }
 }
 
@@ -103,6 +109,15 @@ const columns = [
   { title: '歌名', key: 'title', ellipsis: true, minWidth: 180 },
   { title: '艺术家', key: 'artist', width: 160, ellipsis: true, render: (r: LibraryItem) => r.artist || '-' },
   { title: '专辑', key: 'album', width: 200, ellipsis: true, render: (r: LibraryItem) => r.album || '-' },
+  {
+    title: '类型',
+    key: 'kind',
+    width: 90,
+    render: (r: LibraryItem) =>
+      r.kind === 'favorite'
+        ? h(NTag, { size: 'small', type: 'error', bordered: false }, { default: () => '收藏' })
+        : h(NTag, { size: 'small', type: 'info', bordered: false }, { default: () => '下载' }),
+  },
   { title: '音质', key: 'quality', width: 90, render: (r: LibraryItem) => h(NTag, { size: 'small', bordered: false }, { default: () => r.quality || '-' }) },
   { title: '格式', key: 'format', width: 70, render: (r: LibraryItem) => r.format || '-' },
   {
@@ -117,7 +132,7 @@ const columns = [
 async function fetchLibrary() {
   loading.value = true
   try {
-    const res = await listLibrary(searchQuery.value || undefined, page.value, 50)
+    const res = await listLibrary(searchQuery.value || undefined, page.value, 50, kindFilter.value || undefined)
     items.value = res.data.data || []
     total.value = res.data.total || 0
   } catch (e: any) {
@@ -127,20 +142,50 @@ async function fetchLibrary() {
   }
 }
 
-onMounted(fetchLibrary)
+function onKindChange() {
+  page.value = 1
+  fetchLibrary()
+}
+
+async function loadQuota() {
+  try {
+    const res = await getMyQuota()
+    const q = res.data?.data?.qq
+    if (q) myQuota.value = { used: q.used ?? 0, limit: q.limit ?? 300 }
+  } catch {
+    /* 忽略：配额获取失败不影响浏览 */
+  }
+}
+
+onMounted(() => {
+  fetchLibrary()
+  loadQuota()
+})
 </script>
 
 <template>
   <div class="library-page">
     <div class="library-header">
-      <h1 class="page-title">音乐库 ({{ total }}首)</h1>
-      <n-input
-        v-model:value="searchQuery"
-        placeholder="搜索库中歌曲..."
-        class="library-search"
-        clearable
-        @update:value="fetchLibrary"
-      />
+      <div class="header-left">
+        <h1 class="page-title">音乐库 ({{ total }}首)</h1>
+        <n-radio-group v-model:value="kindFilter" size="small" @update:value="onKindChange">
+          <n-radio-button value="">全部</n-radio-button>
+          <n-radio-button value="download">下载</n-radio-button>
+          <n-radio-button value="favorite">收藏</n-radio-button>
+        </n-radio-group>
+      </div>
+      <div class="header-right">
+        <n-tag v-if="myQuota" size="small" type="warning" round>
+          我的 QQ 下载 {{ myQuota.used }}/{{ myQuota.limit }}
+        </n-tag>
+        <n-input
+          v-model:value="searchQuery"
+          placeholder="搜索库中歌曲..."
+          class="library-search"
+          clearable
+          @update:value="fetchLibrary"
+        />
+      </div>
     </div>
 
     <n-spin :show="loading">
@@ -165,6 +210,8 @@ onMounted(fetchLibrary)
               <span v-if="item.album"> · {{ item.album }}</span>
             </div>
             <div class="mi-meta">
+              <n-tag v-if="item.kind === 'favorite'" size="tiny" type="error" :bordered="false" round>收藏</n-tag>
+              <n-tag v-else-if="item.kind === 'download'" size="tiny" type="info" :bordered="false" round>下载</n-tag>
               <n-tag v-if="item.quality" size="tiny" :bordered="false" round>{{ item.quality }}</n-tag>
               <n-tag v-if="item.format" size="tiny" :bordered="false" round>{{ item.format }}</n-tag>
               <span class="mi-duration">{{ fmtDuration(item.duration) }}</span>
@@ -221,6 +268,20 @@ onMounted(fetchLibrary)
   flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 20px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .library-search {

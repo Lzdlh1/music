@@ -175,6 +175,9 @@ export interface LibraryItem {
   file_size: number
   duration: number
   source: string
+  source_track_id?: string
+  /** download=下载入库 / favorite=收藏（在线试听） */
+  kind?: string
   remote_paths?: Record<string, string>
   cover_url: string
   has_lyrics: boolean

@@ -5,9 +5,12 @@ import { useSearchStore } from '@/stores/search'
 import TrackCard from '@/components/search/TrackCard.vue'
 import DownloadDialog from '@/components/search/DownloadDialog.vue'
 import { listAllChannelFiles, saveFileToLibrary, type TGChannelFile } from '@/api/telegram'
-import type { TrackResult } from '@/types'
+import { trackStreamUrl, favoriteTrack } from '@/api/track'
+import { usePlayerStore } from '@/stores/player'
+import type { TrackResult, PlayTrack } from '@/types'
 
 const searchStore = useSearchStore()
+const player = usePlayerStore()
 const message = useMessage()
 const searchInput = ref('')
 const qualityFilter = ref<string | null>(null)
@@ -55,6 +58,57 @@ function handleKeydown(e: KeyboardEvent) {
 function handleDownload(track: TrackResult) {
   downloadTrack.value = track
   showDownload.value = true
+}
+
+/** 在线试听：当前曲目加入播放列表并播放 128K 代理流 */
+function handlePlay(track: TrackResult) {
+  const playing: PlayTrack = {
+    id: track.id,
+    title: track.title,
+    artist: track.artist || '',
+    album: track.album || '',
+    cover_url: track.cover_url,
+    duration: track.duration || 0,
+    src: trackStreamUrl(track.id),
+  }
+  const queue = searchStore.results.map((t) => ({
+    id: t.id,
+    title: t.title,
+    artist: t.artist || '',
+    album: t.album || '',
+    cover_url: t.cover_url,
+    duration: t.duration || 0,
+    src: trackStreamUrl(t.id),
+  }))
+  player.playTrack(playing, queue)
+}
+
+const favoriting = ref<string | null>(null)
+
+/** 收藏：写入音乐库（kind=favorite），可随时在线试听 */
+async function handleFavorite(track: TrackResult) {
+  if (favoriting.value) return
+  favoriting.value = track.id
+  try {
+    const res = await favoriteTrack({
+      track_id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration,
+      cover_url: track.cover_url,
+    })
+    const d = res.data as any
+    if (d.already) {
+      message.info('已在收藏中')
+    } else {
+      message.success(`已收藏: ${track.title}`)
+    }
+  } catch (e: any) {
+    message.error(e?.response?.data?.message || '收藏失败')
+  } finally {
+    favoriting.value = null
+  }
 }
 
 function handleTGDownload(file: TGChannelFile) {
@@ -142,6 +196,8 @@ function tgFormatLabel(file: TGChannelFile): string {
           :key="track.id"
           :track="track"
           @download="handleDownload"
+          @play="handlePlay"
+          @favorite="handleFavorite"
         />
         <div class="load-more" v-if="searchStore.results.length < searchStore.total">
           <n-button @click="searchStore.loadMore()" :loading="searchStore.loading">

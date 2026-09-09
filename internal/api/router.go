@@ -107,28 +107,43 @@ func (s *Server) setupRoutes() {
 
 	api := s.app.Group("/api/v1")
 
-	// 公开路由（认证前可访问）
-	authHandler := handlers.NewAuthHandler(&s.cfg.Auth)
+	// ---------- 公开路由（无需登录） ----------
+	authHandler := handlers.NewAuthHandler(s.db, s.cfg.Auth.JWTSecret)
 	api.Post("/auth/login", authHandler.Login)
 	api.Get("/auth/status", authHandler.AuthStatus)
+	api.Post("/auth/setup", authHandler.Setup)     // 首次使用创建管理员
+	api.Post("/auth/register", authHandler.Register) // 邀请码注册
 
-	// 云盘流媒体播放（<audio> 无法携带 JWT header，故放在认证中间件之前）
+	// 云盘/曲库/在线试听流媒体播放（<audio> 无法携带 JWT header，用 query token 鉴权）
 	cloudHandler := handlers.NewCloudHandler(s.storageMgr, s.db, s.log)
-	api.Get("/storage/:id/stream", cloudHandler.Stream)
-	api.Get("/library/:id/stream", cloudHandler.LibraryStream)
+	api.Get("/storage/:id/stream", authmw.AuthQueryToken(s.db, s.cfg.Auth.JWTSecret), cloudHandler.Stream)
+	api.Get("/library/:id/stream", authmw.AuthQueryToken(s.db, s.cfg.Auth.JWTSecret), cloudHandler.LibraryStream)
+	api.Get("/library/:id/lyrics", authmw.AuthQueryToken(s.db, s.cfg.Auth.JWTSecret), cloudHandler.LibraryLyrics)
+	trackHandler := handlers.NewTrackHandler(s.aggregator, s.db, s.log)
+	api.Get("/track/:id/stream", authmw.AuthQueryToken(s.db, s.cfg.Auth.JWTSecret), trackHandler.Stream)
 
-	// JWT 认证中间件
-	api.Use(authmw.AuthMiddleware(&s.cfg.Auth))
+	// ---------- JWT 认证中间件（数据库驱动，始终启用） ----------
+	api.Use(authmw.AuthMiddleware(s.db, s.cfg.Auth.JWTSecret))
 
-	// 搜索
+	// 搜索与曲目（登录用户）
 	searchHandler := handlers.NewSearchHandler(s.aggregator, s.log)
 	api.Get("/search", searchHandler.Search)
 	api.Get("/track/:id/sources", searchHandler.GetTrackSources)
 	api.Get("/track/:id/lyrics", searchHandler.GetLyrics)
 	api.Get("/track/:id/cover", searchHandler.GetCover)
 
-	// 下载任务
-	taskHandler := handlers.NewTaskHandler(s.scheduler, s.log)
+	// 在线试听（128K 代理流，不落盘）与收藏
+	api.Post("/library/favorite", trackHandler.Favorite)
+	api.Delete("/library/favorite/:id", trackHandler.Unfavorite)
+
+	// 当前用户
+	usersHandler := handlers.NewUsersHandler(s.db, s.log)
+	api.Get("/users/me", usersHandler.Me)
+	api.Put("/users/me", usersHandler.UpdateMe)
+	api.Get("/users/me/quota", usersHandler.MyQuota)
+
+	// 下载任务（登录用户）
+	taskHandler := handlers.NewTaskHandler(s.scheduler, s.db, s.log)
 	api.Post("/tasks", taskHandler.Create)
 	api.Get("/tasks", taskHandler.List)
 	api.Get("/tasks/stats", taskHandler.Stats)
@@ -138,63 +153,72 @@ func (s *Server) setupRoutes() {
 	api.Put("/tasks/:id/resume", taskHandler.Resume)
 	api.Delete("/tasks/:id", taskHandler.Cancel)
 
-	// 存储配置
+	// 存储配置（用户创建归自己；共享只读）
 	storageHandler := handlers.NewStorageHandler(s.storageMgr, s.db, s.log)
 	api.Get("/storage", storageHandler.List)
 	api.Post("/storage", storageHandler.Create)
 	api.Put("/storage/:id", storageHandler.Update)
 	api.Delete("/storage/:id", storageHandler.Delete)
-	api.Post("/storage/:id/test", storageHandler.Test)
-	api.Get("/storage/:id/browse", storageHandler.Browse)
+	api.Post("/storage/:id/test", authmw.StorageReadGuard(s.db), storageHandler.Test)
+	api.Get("/storage/:id/browse", authmw.StorageReadGuard(s.db), storageHandler.Browse)
 
-	// 云盘文件管理
-	api.Post("/storage/:id/mkdir", cloudHandler.Mkdir)
-	api.Post("/storage/:id/rename", cloudHandler.Rename)
-	api.Delete("/storage/:id/file", cloudHandler.DeleteFile)
-	api.Post("/storage/:id/upload", cloudHandler.Upload)
+	// 云盘文件操作（写需为自己的存储）
+	api.Post("/storage/:id/mkdir", authmw.StorageWriteGuard(s.db), cloudHandler.Mkdir)
+	api.Post("/storage/:id/rename", authmw.StorageWriteGuard(s.db), cloudHandler.Rename)
+	api.Delete("/storage/:id/file", authmw.StorageWriteGuard(s.db), cloudHandler.DeleteFile)
+	api.Post("/storage/:id/upload", authmw.StorageWriteGuard(s.db), cloudHandler.Upload)
 
-	// 移动云盘（139）网页端登录：短信验证码 / 账号密码 / 扫码
-	yun139Handler := handlers.NewYun139Handler(s.db, s.storageMgr, s.log)
-	api.Post("/yun139/sms/send", yun139Handler.SendSms)
-	api.Post("/yun139/sms/login", yun139Handler.SmsLogin)
-	api.Post("/yun139/password/login", yun139Handler.PasswordLogin)
-	api.Post("/yun139/qr/start", yun139Handler.StartQR)
-	api.Post("/yun139/qr/poll", yun139Handler.PollQR)
-
-	// 音乐源配置
-	sourceHandler := handlers.NewSourceHandler(s.db, s.aggregator, s.mtMgr, s.log)
-	api.Get("/sources", sourceHandler.List)
-	api.Post("/sources", sourceHandler.Create)
-	api.Put("/sources/:id", sourceHandler.Update)
-	api.Delete("/sources/:id", sourceHandler.Delete)
-	api.Post("/sources/:id/test", sourceHandler.Test)
-	api.Get("/sources/qq/quota", sourceHandler.GetQQQuota)
-
-	// 系统设置
-	settingsHandler := handlers.NewSettingsHandler(s.db, s.log)
-	api.Get("/settings", settingsHandler.Get)
-	api.Put("/settings", settingsHandler.Update)
-	api.Get("/settings/download", settingsHandler.GetDownload)
-	api.Put("/settings/download", settingsHandler.UpdateDownload)
-	api.Get("/settings/naming", settingsHandler.GetNaming)
-	api.Put("/settings/naming", settingsHandler.UpdateNaming)
-
-	// 音乐库
+	// 音乐库（登录用户，按归属过滤）
 	libraryHandler := handlers.NewLibraryHandler(s.db, s.storageMgr, s.log)
 	api.Get("/library", libraryHandler.List)
 	api.Get("/library/:id", libraryHandler.Get)
-	api.Get("/library/:id/lyrics", cloudHandler.LibraryLyrics)
 	api.Delete("/library/:id", libraryHandler.Delete)
 
-	// 歌单导入
+	// 歌单导入（登录用户）
 	playlistHandler := handlers.NewPlaylistHandler(s.log)
 	api.Post("/playlist/parse-url", playlistHandler.ParseURL)
 	api.Post("/playlist/parse-text", playlistHandler.ParseText)
 	api.Post("/playlist/parse-file", playlistHandler.ParseFile)
 
+	// ---------- 仅管理员 ----------
+	admin := api.Group("", authmw.RequireAdmin())
+
+	// 用户与邀请码
+	admin.Get("/users", usersHandler.List)
+	admin.Put("/users/:id", usersHandler.Update)
+	admin.Post("/users/invite", usersHandler.CreateInvite)
+	admin.Get("/users/invites", usersHandler.ListInvites)
+	admin.Delete("/users/invites/:id", usersHandler.DeleteInvite)
+
+	// 音乐源配置
+	sourceHandler := handlers.NewSourceHandler(s.db, s.aggregator, s.mtMgr, s.log)
+	admin.Get("/sources", sourceHandler.List)
+	admin.Post("/sources", sourceHandler.Create)
+	admin.Put("/sources/:id", sourceHandler.Update)
+	admin.Delete("/sources/:id", sourceHandler.Delete)
+	admin.Post("/sources/:id/test", sourceHandler.Test)
+	admin.Get("/sources/qq/quota", sourceHandler.GetQQQuota)
+
+	// 系统设置
+	settingsHandler := handlers.NewSettingsHandler(s.db, s.log)
+	admin.Get("/settings", settingsHandler.Get)
+	admin.Put("/settings", settingsHandler.Update)
+	admin.Get("/settings/download", settingsHandler.GetDownload)
+	admin.Put("/settings/download", settingsHandler.UpdateDownload)
+	admin.Get("/settings/naming", settingsHandler.GetNaming)
+	admin.Put("/settings/naming", settingsHandler.UpdateNaming)
+
+	// 移动云盘（139）登录
+	yun139Handler := handlers.NewYun139Handler(s.db, s.storageMgr, s.log)
+	admin.Post("/yun139/sms/send", yun139Handler.SendSms)
+	admin.Post("/yun139/sms/login", yun139Handler.SmsLogin)
+	admin.Post("/yun139/password/login", yun139Handler.PasswordLogin)
+	admin.Post("/yun139/qr/start", yun139Handler.StartQR)
+	admin.Post("/yun139/qr/poll", yun139Handler.PollQR)
+
 	// Telegram
 	tgHandler := handlers.NewTelegramHandler(s.tgBot, s.mtMgr, s.db, s.log)
-	tg := api.Group("/telegram")
+	tg := admin.Group("/telegram")
 	tg.Get("/bots", tgHandler.ListBots)
 	tg.Post("/bots", tgHandler.CreateBot)
 	tg.Put("/bots/:id", tgHandler.UpdateBot)
@@ -223,16 +247,16 @@ func (s *Server) setupRoutes() {
 
 	// 系统信息
 	systemHandler := handlers.NewSystemHandler(s.db, s.log)
-	api.Get("/system/info", systemHandler.Info)
-	api.Get("/system/logs", systemHandler.Logs)
-	api.Get("/system/storage-usage", systemHandler.StorageUsage)
-	api.Post("/system/cleanup", systemHandler.Cleanup)
+	admin.Get("/system/info", systemHandler.Info)
+	admin.Get("/system/logs", systemHandler.Logs)
+	admin.Get("/system/storage-usage", systemHandler.StorageUsage)
+	admin.Post("/system/cleanup", systemHandler.Cleanup)
 
 	// 代理配置
 	proxyHandler := handlers.NewProxyHandler(s.proxyMgr, s.log)
-	api.Get("/proxy", proxyHandler.GetConfig)
-	api.Put("/proxy", proxyHandler.SetConfig)
-	api.Post("/proxy/test", proxyHandler.Test)
+	admin.Get("/proxy", proxyHandler.GetConfig)
+	admin.Put("/proxy", proxyHandler.SetConfig)
+	admin.Post("/proxy/test", proxyHandler.Test)
 
 	// WebSocket
 	s.app.Use("/ws", func(c *fiber.Ctx) error {

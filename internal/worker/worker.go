@@ -221,7 +221,7 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 
 	// 记录来源下载配额（如 QQ 音乐每月限额）：只在下载成功时计数
 	if err == nil {
-		w.recordSourceDownload(ctx, trackInfo.Source)
+		w.recordSourceDownload(ctx, trackInfo.Source, task.OwnerID)
 	}
 
 	// 4. 元数据处理（标签、封面、歌词）
@@ -432,6 +432,8 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 	remotePathsJSON, _ := json.Marshal(remotePaths)
 	library := &models.Library{
 		ID:            uuid.New().String(),
+		OwnerID:       task.OwnerID, // 管理员下载为空=全局共享，普通用户=私有
+		Kind:          "download",
 		Title:         trackInfo.Title,
 		Artist:        trackInfo.Artist,
 		Album:         trackInfo.Album,
@@ -469,17 +471,17 @@ func (w *Worker) Execute(ctx context.Context, task *models.Task, onProgress func
 
 // recordRecorder 由音乐源实现的下载计数接口（目前 QQ 源提供）
 type recordRecorder interface {
-	RecordDownload(ctx context.Context) error
+	RecordDownload(ctx context.Context, userID string) error
 }
 
-// recordSourceDownload 对匹配的源记录一次成功下载（QQ 音乐每月限额本地统计）
-func (w *Worker) recordSourceDownload(ctx context.Context, sourceName string) {
+// recordSourceDownload 对匹配的源记录一次成功下载（QQ 音乐每月限额本地统计，按用户）
+func (w *Worker) recordSourceDownload(ctx context.Context, sourceName, ownerID string) {
 	for _, src := range w.aggregator.Sources() {
 		if src.Name() != sourceName {
 			continue
 		}
 		if r, ok := src.(recordRecorder); ok {
-			if err := r.RecordDownload(ctx); err != nil {
+			if err := r.RecordDownload(ctx, ownerID); err != nil {
 				w.log.Warn("record source download quota failed", zap.String("source", sourceName), zap.Error(err))
 			}
 		}
