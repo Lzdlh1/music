@@ -10,6 +10,7 @@ cloud-test/
 
 # 临时文件
 temp/
+temp_deploy/
 
 # 本地配置（含敏感信息，模板见 config.yaml.example）
 config.yaml
