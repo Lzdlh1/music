@@ -212,7 +212,9 @@ func (s *Yun139Storage) ensureHost(ctx context.Context) error {
 		return err
 	}
 	if !out.Success {
-		return fmt.Errorf("139 查询路由失败: %s %s", out.Code, out.Message)
+		// 常见于 Token 失效或授权不足；配置里没有 personal_host 时才会走到这里，
+		// 重新登录一次即可同时刷新 Token 与路由信息，故提示用户重登。
+		return fmt.Errorf("139 路由查询失败（%s %s）。请到「设置 → 存储目标」重新登录该云盘，登录会一并刷新 Token 与个人云路由", out.Code, out.Message)
 	}
 	for _, p := range out.Data.RoutePolicyList {
 		if p.ModName == "personal" && p.HTTPS != "" {
