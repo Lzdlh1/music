@@ -481,7 +481,10 @@ func buildAuth(account, authToken string) string {
 // thirdLogin 统一登录请求。
 // loginType: 0=短信验证码, 1=账号密码, 5=二维码扫码
 // pintype 映射（网页端 loginDataPrecode）：短信=5(香港8位号23), 密码=9, 二维码=21
-func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, loginType int) (*LoginResult, error) {
+// random 口径与网页端一致：密码登录用 16 位随机大写（服务端不校验配对），
+// 短信登录必须传入 GetSmsCode 返回的 random——服务端据此把验证码与短信请求配对，
+// 传空会直接返回「验证码不正确」。
+func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, loginType int, random string) (*LoginResult, error) {
 	pintype := 5
 	switch loginType {
 	case LoginTypeSMS:
@@ -493,8 +496,6 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 	case LoginTypeQR:
 		pintype = 21
 	}
-	// 网页端 c 函数结构：random 仅密码登录为 16 位随机大写
-	random := ""
 	if loginType == LoginTypePassword {
 		random = strings.ToUpper(randomString(16))
 	}
@@ -681,14 +682,15 @@ func (lc *LoginClient) GetSmsCode(ctx context.Context, account string) (string, 
 	return data.Random, nil
 }
 
-// SmsLogin 短信验证码登录
-func (lc *LoginClient) SmsLogin(ctx context.Context, account, code string) (*LoginResult, error) {
-	return lc.thirdLogin(ctx, account, code, LoginTypeSMS)
+// SmsLogin 短信验证码登录。
+// random 必须是 GetSmsCode 返回的值，服务端据此配对验证码；传空会报「验证码不正确」。
+func (lc *LoginClient) SmsLogin(ctx context.Context, account, code, random string) (*LoginResult, error) {
+	return lc.thirdLogin(ctx, account, code, LoginTypeSMS, random)
 }
 
 // PasswordLogin 账号密码登录
 func (lc *LoginClient) PasswordLogin(ctx context.Context, account, password string) (*LoginResult, error) {
-	return lc.thirdLogin(ctx, account, password, LoginTypePassword)
+	return lc.thirdLogin(ctx, account, password, LoginTypePassword, "")
 }
 
 // StartQRLogin 生成扫码登录信息（二维码内容 + sID），二维码 dID 绑定设备指纹
@@ -701,5 +703,5 @@ func (lc *LoginClient) StartQRLogin() (*QRLoginInfo, error) {
 // PollQRLogin 轮询扫码登录状态。
 // 返回 nil 表示登录成功；返回 *LoginError（Code 为平台状态码）表示等待中/已取消/已失效。
 func (lc *LoginClient) PollQRLogin(ctx context.Context, sid string) (*LoginResult, error) {
-	return lc.thirdLogin(ctx, "", sid, LoginTypeQR)
+	return lc.thirdLogin(ctx, "", sid, LoginTypeQR, "")
 }

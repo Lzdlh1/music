@@ -50,12 +50,15 @@ func (h *Yun139Handler) SmsLogin(c *fiber.Ctx) error {
 	var body struct {
 		Account   string `json:"account"`
 		Code      string `json:"code"`
+		Random    string `json:"random"`
 		StorageID string `json:"storage_id"`
 	}
 	if err := c.BodyParser(&body); err != nil || body.Account == "" || body.Code == "" {
 		return c.Status(400).JSON(fiber.Map{"error": true, "message": "account and code are required"})
 	}
-	result, err := h.login.SmsLogin(c.Context(), body.Account, body.Code)
+	// random 必须原样带回 SendSms 返回的值：服务端据此把验证码与短信请求配对，
+	// 字段为空时无论验证码是否正确都会返回「验证码不正确 (9441)」
+	result, err := h.login.SmsLogin(c.Context(), body.Account, body.Code, body.Random)
 	if err != nil {
 		return c.JSON(fiber.Map{"success": false, "message": err.Error()})
 	}
