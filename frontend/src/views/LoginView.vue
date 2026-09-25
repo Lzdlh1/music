@@ -29,7 +29,7 @@ onMounted(async () => {
   // 检测是否需要首次初始化（创建管理员）
   try {
     const res = await getAuthStatus()
-    needSetup.value = !!(res.data as any)?.data?.need_setup
+    needSetup.value = !!res.data?.need_setup
   } catch {
     /* 接口异常时按普通登录处理 */
   }

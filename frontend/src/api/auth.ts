@@ -13,8 +13,9 @@ export interface LoginResult {
   role: string
 }
 
+// 该接口直接返回扁平对象 {"auth_enabled":..,"need_setup":..}，不套 ApiResponse 外壳
 export function getAuthStatus() {
-  return api.get<ApiResponse<AuthStatus>>('/auth/status')
+  return api.get<AuthStatus>('/auth/status')
 }
 
 export function login(username: string, password: string) {
