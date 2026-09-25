@@ -226,6 +226,18 @@ func loadMusicSources(database *gorm.DB, aggregator *source.Aggregator, mtMgr *t
 			qcfg.Priority = cfg.Priority
 			aggregator.Register(source.NewQQSource(qcfg, handlers.NewQuotaRecorder(database), logger))
 			logger.Info("loaded music source", zap.String("name", cfg.Name), zap.String("type", cfg.Type))
+		case "migu":
+			var mcfg source.MiguConfig
+			if err := models.UnmarshalTo(cfg.Config, &mcfg); err != nil {
+				logger.Warn("parse migu config", zap.String("id", cfg.ID), zap.Error(err))
+				continue
+			}
+			if mcfg.Name == "" {
+				mcfg.Name = cfg.Name
+			}
+			mcfg.Priority = cfg.Priority
+			aggregator.Register(source.NewMiguSource(mcfg, logger))
+			logger.Info("loaded music source", zap.String("name", cfg.Name), zap.String("type", cfg.Type))
 		default:
 			logger.Warn("unknown music source type", zap.String("type", cfg.Type), zap.String("id", cfg.ID))
 		}

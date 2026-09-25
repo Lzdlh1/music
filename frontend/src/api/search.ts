@@ -8,13 +8,14 @@ export function searchTracks(q: string, quality?: string, page = 1, size = 20) {
 }
 
 export function getTrackSources(id: string) {
-  return api.get<ApiResponse<AvailableSource[]>>(`/track/${id}/sources`)
+  // 曲目 ID 可能包含 : | 等字符（如咪咕源），必须编码后再拼入路径
+  return api.get<ApiResponse<AvailableSource[]>>(`/track/${encodeURIComponent(id)}/sources`)
 }
 
 export function getTrackLyrics(id: string) {
-  return api.get(`/track/${id}/lyrics`)
+  return api.get(`/track/${encodeURIComponent(id)}/lyrics`)
 }
 
 export function getTrackCover(id: string) {
-  return api.get(`/track/${id}/cover`)
+  return api.get(`/track/${encodeURIComponent(id)}/cover`)
 }

@@ -330,6 +330,18 @@ func (h *SourceHandler) Test(c *fiber.Ctx) error {
 		}
 		return c.JSON(fiber.Map{"success": false, "message": "QQ 音乐 Cookie 无效或无法访问，请重新登录 y.qq.com 获取"})
 	}
+	if baseURL == "" && src.Type == "migu" {
+		// 咪咕音乐源：用最小搜索请求校验接口可用性
+		var mcfg source.MiguConfig
+		if err := json.Unmarshal(src.Config, &mcfg); err != nil {
+			return c.JSON(fiber.Map{"success": false, "message": "invalid migu config"})
+		}
+		ms := source.NewMiguSource(mcfg, h.log)
+		if ms.IsAvailable(c.Context()) {
+			return c.JSON(fiber.Map{"success": true, "message": "咪咕音乐接口可用"})
+		}
+		return c.JSON(fiber.Map{"success": false, "message": "咪咕音乐接口不可用，请检查网络"})
+	}
 	if baseURL == "" {
 		return c.JSON(fiber.Map{"success": false, "message": "no base_url in config"})
 	}
@@ -494,6 +506,16 @@ func (h *SourceHandler) buildMusicSource(m models.MusicSourceConfig) (source.Mus
 		}
 		cfg.Priority = m.Priority
 		return source.NewQQSource(cfg, &QuotaRecorder{db: h.db}, h.log), nil
+	case "migu":
+		var cfg source.MiguConfig
+		if err := json.Unmarshal(m.Config, &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Name == "" {
+			cfg.Name = m.Name
+		}
+		cfg.Priority = m.Priority
+		return source.NewMiguSource(cfg, h.log), nil
 	default:
 		return nil, fmt.Errorf("unknown music source type: %s", m.Type)
 	}

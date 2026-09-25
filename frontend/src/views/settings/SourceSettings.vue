@@ -26,6 +26,8 @@ const form = ref({
     music_source: 'netease',
     cookie: '',
     limit: 300,
+    token: '',
+    user_id: '',
   },
 })
 
@@ -34,6 +36,7 @@ const typeOptions = [
   { label: '自定义 API', value: 'custom_api' },
   { label: '网易云 (NeteaseCloudMusicApi)', value: 'netease' },
   { label: 'QQ 音乐 (直链/VIP)', value: 'qq' },
+  { label: '咪咕音乐 (直连/VIP)', value: 'migu' },
 ]
 
 const metingSourceOptions = [
@@ -66,7 +69,7 @@ onMounted(loadSources)
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', type: 'meting', priority: 0, enabled: true, config: { base_url: '', api_key: '', timeout: 30, music_source: 'netease', cookie: '', limit: 300 } }
+  form.value = { name: '', type: 'meting', priority: 0, enabled: true, config: { base_url: '', api_key: '', timeout: 30, music_source: 'netease', cookie: '', limit: 300, token: '', user_id: '' } }
   showModal.value = true
 }
 
@@ -85,6 +88,8 @@ function openEdit(src: MusicSourceConfig) {
       music_source: cfg.music_source || 'netease',
       cookie: cfg.cookie || '',
       limit: cfg.limit || 300,
+      token: cfg.token || '',
+      user_id: cfg.user_id || '',
     },
   }
   showModal.value = true
@@ -173,7 +178,7 @@ async function handleTest(id: string) {
         <n-form-item label="类型">
           <n-select v-model:value="form.type" :options="typeOptions" />
         </n-form-item>
-        <n-form-item v-if="form.type !== 'qq'" label="API 地址">
+        <n-form-item v-if="form.type !== 'qq' && form.type !== 'migu'" label="API 地址">
           <n-input v-model:value="form.config.base_url" :placeholder="form.type === 'meting' ? 'https://music-api.gdstudio.xyz/api.php' : 'https://api.example.com'" />
         </n-form-item>
         <n-form-item v-if="form.type === 'meting'" label="音乐平台">
@@ -197,6 +202,18 @@ async function handleTest(id: string) {
         <n-form-item v-if="form.type === 'qq'" label="月限额">
           <n-input-number v-model:value="form.config.limit" :min="1" :max="9999" style="width: 160px;" />
           <span style="margin-left: 8px; color: #999; font-size: 12px;">豪华绿钻为 300/月（本地参考统计）</span>
+        </n-form-item>
+        <n-form-item v-if="form.type === 'migu'" label="登录 Token">
+          <n-input
+            v-model:value="form.config.token"
+            type="textarea"
+            :rows="2"
+            placeholder="可选：咪咕客户端抓包得到的 token（请求头 token 字段）"
+          />
+          <template #feedback>不填也可用：搜索、歌词、封面与免费曲目试听/下载全部可用。填入后解锁无损（SQ/ZQ24）与 VIP 曲目</template>
+        </n-form-item>
+        <n-form-item v-if="form.type === 'migu'" label="账号 ID">
+          <n-input v-model:value="form.config.user_id" placeholder="可选：抓包得到的 userId，留空使用默认公共账号" />
         </n-form-item>
         <n-form-item label="超时(秒)">
           <n-input-number v-model:value="form.config.timeout" :min="5" :max="120" />
