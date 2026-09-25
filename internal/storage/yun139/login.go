@@ -634,7 +634,14 @@ func (lc *LoginClient) GetSmsCode(ctx context.Context, account string) (string, 
 		"clientType":  670,
 	}
 	plainJSON, _ := json.Marshal(body)
-	raw, err := lc.postRaw(ctx, "/user/sms/getSmsCode", string(plainJSON), calSign(string(plainJSON)))
+	// 该接口在网页端「需要加密请求体」的名单内（axios 拦截器会对其执行 Dt()），
+	// 必须发 base64(IV + AES-256-CBC(明文))；发明文会让服务端按 base64 解码
+	// 请求体并返回「动态密钥错误: illegal base64 character 7b」。签名仍基于明文计算。
+	enc, err := encryptPayload(plainJSON)
+	if err != nil {
+		return "", fmt.Errorf("yun139: 发送验证码请求加密失败: %w", err)
+	}
+	raw, err := lc.postRaw(ctx, "/user/sms/getSmsCode", enc, calSign(string(plainJSON)))
 	if err != nil {
 		return "", err
 	}
