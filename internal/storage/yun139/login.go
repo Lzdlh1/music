@@ -444,15 +444,12 @@ func (lc *LoginClient) postEncrypted(ctx context.Context, path string, plain int
 	if err != nil {
 		return nil, err
 	}
-	// 响应可能为加密密文，也可能直接是明文 JSON（兼容）
-	trimmed := strings.TrimSpace(string(raw))
-	if !strings.HasPrefix(trimmed, "{") {
-		pt, err := decryptPayload(trimmed)
-		if err != nil {
-			return nil, fmt.Errorf("yun139 login: 响应解密失败: %v", err)
-		}
-		trimmed = string(pt)
+	// 响应可能为明文 JSON，也可能是 "base64密文"（含内层 data 密文），统一还原
+	pt, err := decryptRespPayload(raw)
+	if err != nil {
+		return nil, fmt.Errorf("yun139 login: 响应解密失败: %v, raw: %s", err, firstBytes(raw, 200))
 	}
+	trimmed := strings.TrimSpace(string(pt))
 	lc.log.Debug("yun139 login response decrypted", zap.String("plain", trimmed))
 	var out thirdLoginResp
 	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
@@ -648,13 +645,14 @@ func (lc *LoginClient) GetSmsCode(ctx context.Context, account string) (string, 
 		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		// 尝试解密响应
-		pt, derr := decryptPayload(strings.TrimSpace(string(raw)))
+		// 响应多为 "base64密文" 形式（带 JSON 引号），统一走 decryptRespPayload：
+		// 它会剥掉外层引号、做外层 AES-256-CBC 解密，并处理内层 data 密文。
+		pt, derr := decryptRespPayload(raw)
 		if derr != nil {
-			return "", fmt.Errorf("yun139: 发送验证码响应解析失败: %v, raw: %s", err, string(raw))
+			return "", fmt.Errorf("yun139: 发送验证码响应解析失败: %v, raw: %s", err, firstBytes(raw, 200))
 		}
 		if err := json.Unmarshal(pt, &out); err != nil {
-			return "", fmt.Errorf("yun139: 发送验证码响应解析失败: %v", err)
+			return "", fmt.Errorf("yun139: 发送验证码响应解析失败: %v, raw: %s", err, firstBytes(pt, 200))
 		}
 	}
 	code := out.Code
