@@ -356,7 +356,8 @@ func (lc *LoginClient) postRawInternal(ctx context.Context, path, body, sign str
 	if err != nil {
 		return nil, err
 	}
-	lc.log.Debug("yun139 login api",
+	// 取证日志：登录链路排障需要看到服务端原始响应（INFO 级便于直接读 journalctl）
+	lc.log.Info("yun139 login api",
 		zap.String("path", path),
 		zap.Int("status", resp.StatusCode),
 		zap.ByteString("body", raw))
@@ -450,7 +451,7 @@ func (lc *LoginClient) postEncrypted(ctx context.Context, path string, plain int
 		return nil, fmt.Errorf("yun139 login: 响应解密失败: %v, raw: %s", err, firstBytes(raw, 200))
 	}
 	trimmed := strings.TrimSpace(string(pt))
-	lc.log.Debug("yun139 login response decrypted", zap.String("plain", trimmed))
+	lc.log.Info("yun139 login response decrypted", zap.String("plain", trimmed))
 	var out thirdLoginResp
 	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
 		return nil, fmt.Errorf("yun139 login: 解密结果解析失败: %v, raw: %s", err, trimmed)
@@ -499,7 +500,7 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 	if loginType == LoginTypePassword {
 		random = strings.ToUpper(randomString(16))
 	}
-	out, err := lc.postEncrypted(ctx, "/user/thirdlogin", map[string]interface{}{
+	payload := map[string]interface{}{
 		"msisdn":     account,
 		"random":     random,
 		"dycpwd":     dycPwd,
@@ -510,7 +511,21 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 		"secinfo":    strings.ToUpper(sha1Hex("fetion.com.cn:" + dycPwd)),
 		"loginMode":  "0",
 		"extInfo":    map[string]interface{}{},
-	})
+	}
+	// 取证日志：验证码登录失败时，需要看到实际发出的 random/dycpwd 组合才能定位配对问题。
+	// 密码登录会携带明文密码，故只记字段名不记值。
+	if plain, err := json.Marshal(payload); err == nil {
+		shown := string(plain)
+		if loginType == LoginTypePassword {
+			shown = fmt.Sprintf(`{"msisdn":%q,"random":%q,"dycpwd":"<masked>","pintype":%d}`, account, random, pintype)
+		}
+		lc.log.Info("yun139 thirdlogin request",
+			zap.Int("login_type", loginType),
+			zap.String("path", "/user/thirdlogin"),
+			zap.String("plain_body", shown),
+			zap.Bool("skey_present", lc.secretKey != ""))
+	}
+	out, err := lc.postEncrypted(ctx, "/user/thirdlogin", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -676,10 +691,16 @@ func (lc *LoginClient) GetSmsCode(ctx context.Context, account string) (string, 
 	if len(out.Data) > 0 {
 		_ = json.Unmarshal(out.Data, &data)
 	}
-	if data.Random == "" {
-		data.Random = body["random"].(string)
-	}
-	return data.Random, nil
+	localRandom := body["random"].(string)
+	// 与网页端口径保持一致（网页端无条件执行 e.data.random = n.random，用本地生成值覆盖响应值）：
+	// 登录时必须回带本地生成的那个 random，服务端据此把验证码与短信请求配对。
+	lc.log.Info("yun139 sms code sent",
+		zap.String("account", account),
+		zap.String("random_used", localRandom),
+		zap.String("random_in_resp", data.Random),
+		zap.String("resp_code", out.Code),
+		zap.String("resp_message", out.Message))
+	return localRandom, nil
 }
 
 // SmsLogin 短信验证码登录。
