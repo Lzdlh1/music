@@ -15,6 +15,7 @@ import (
 	"github.com/musicflow/musicflow/internal/source"
 	"github.com/musicflow/musicflow/internal/storage"
 	"github.com/musicflow/musicflow/internal/storage/factory"
+	"github.com/musicflow/musicflow/internal/storage/yun139"
 	"github.com/musicflow/musicflow/internal/telegram"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -188,6 +189,62 @@ func (h *StorageHandler) Browse(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": true, "message": err.Error()})
 	}
 	return c.JSON(fiber.Map{"data": files})
+}
+
+// RefreshYun139Tokens 定时续期 139 云盘凭据。
+// Authorization 自带过期时间，剩余不足 15 天时用当前 token 直接换新（无需账号密码）；
+// 已过期则无法续期，只能提示用户重新登录。
+func (h *StorageHandler) RefreshYun139Tokens(ctx context.Context) error {
+	var targets []models.StorageTarget
+	if err := h.db.Where("type = ? AND enabled = ?", "yun139", true).Find(&targets).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, t := range targets {
+		var cfg yun139.Config
+		if err := json.Unmarshal(t.Config, &cfg); err != nil || cfg.Token == "" {
+			continue
+		}
+		expire, err := yun139.ParseAuthorizationExpiry(cfg.Token)
+		if err != nil {
+			h.log.Warn("139 凭据解析失败", zap.String("name", t.Name), zap.Error(err))
+			continue
+		}
+		if !yun139.NeedRefresh(expire, now) {
+			continue
+		}
+		newAuth, newExpire, err := yun139.RefreshAuthorization(ctx, cfg.Token, h.log)
+		if err != nil {
+			h.log.Warn("139 凭据续期失败，请到「设置 → 存储目标」重新登录该云盘",
+				zap.String("name", t.Name), zap.Time("expire_at", expire), zap.Error(err))
+			continue
+		}
+		// 写回数据库，保留其余配置字段
+		var cfgMap map[string]interface{}
+		if err := json.Unmarshal(t.Config, &cfgMap); err != nil {
+			cfgMap = map[string]interface{}{}
+		}
+		cfgMap["token"] = newAuth
+		newJSON, _ := json.Marshal(cfgMap)
+		if err := h.db.Model(&models.StorageTarget{}).Where("id = ?", t.ID).
+			Update("config", models.JSON(newJSON)).Error; err != nil {
+			h.log.Warn("139 凭据写回失败", zap.String("name", t.Name), zap.Error(err))
+			continue
+		}
+		// 热更新运行实例（旧实例持有旧 token）
+		h.manager.Remove(t.ID)
+		if backend, err := factory.Build(factory.TargetSpec{
+			ID:     t.ID,
+			Name:   t.Name,
+			Type:   storage.StorageType(t.Type),
+			Config: newJSON,
+			Log:    h.log,
+		}); err == nil {
+			h.manager.Register(backend)
+		}
+		h.log.Info("139 凭据已自动续期", zap.String("name", t.Name), zap.Time("expire_at", newExpire))
+	}
+	return nil
 }
 
 // SourceHandler 音乐源配置处理器

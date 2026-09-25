@@ -113,6 +113,28 @@ func main() {
 		}
 	}()
 
+	// 启动 139 云盘凭据自动续期：Authorization 自带过期时间，剩余不足 15 天时自动换新，
+	// 避免每 30 天就要手动重新登录一次
+	go func() {
+		stHandler := handlers.NewStorageHandler(storageMgr, database, logger)
+		first := time.NewTimer(45 * time.Second)
+		every := time.NewTicker(12 * time.Hour)
+		defer first.Stop()
+		defer every.Stop()
+		run := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := stHandler.RefreshYun139Tokens(ctx); err != nil {
+				logger.Warn("yun139 token auto renew failed", zap.Error(err))
+			}
+		}
+		<-first.C
+		run()
+		for range every.C {
+			run()
+		}
+	}()
+
 	// 恢复未完成的任务
 	sched.RecoverTasks()
 
