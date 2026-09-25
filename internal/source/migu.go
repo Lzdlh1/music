@@ -1,14 +1,16 @@
 // 咪咕音乐直连源。
 //
-// 搜索 / 封面 / 歌词走咪咕 H5 开放接口，无需登录即可拿到完整元数据；
-// 播放与下载由 listenSong.do 直接返回音频字节流（该地址本身即下载直链）。
-// 免费曲目免登录可用；无损（SQ/ZQ24）与 VIP 曲目需要在配置中填入
-// 登录后的 token 与 userId（从咪咕客户端抓包获取）。
+// 搜索 / 封面 / 歌词走咪咕 H5 开放接口，无需登录即可拿到完整元数据。
+// 播放与下载优先走 H5 播放接口 strategy/listen-url/h5/v2.4：该接口只做基础
+// 参数校验（referer + channel + birth），不校验会员权益，白金会员曲目同样
+// 下发完整音频直链；响应体按站点前端约定做了字节变换，需 miguDecodeBody 还原。
+// 失败时回退到 listenSong.do（该地址直接返回音频字节流）。
 package source
 
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,14 +43,25 @@ type MiguConfig struct {
 }
 
 const (
-	miguSearchAPI = "https://c.musicapp.migu.cn/v1.0/content/search_all.do"
-	miguPlayAPI   = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/sub/listenSong.do"
-	miguChannel   = "0140210"
-	miguVersion   = "6.0.0"
+	miguSearchAPI   = "https://c.musicapp.migu.cn/v1.0/content/search_all.do"
+	miguPlayAPI     = "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/sub/listenSong.do"
+	miguH5ListenAPI = "https://c.musicapp.migu.cn/strategy/listen-url/h5/v2.4"
+	miguChannel     = "0140210"
+	miguVersion     = "6.0.0"
+	// H5 播放接口专用的渠道标识，与搜索接口的 miguChannel 不同，不可混用
+	miguH5Channel = "014021I"
 	// 咪咕公开账号 ID：未登录时用于换取免费曲目的试听/下载地址
 	miguPublicUID = "15548614588710179085069"
 
 	miguSearchSwitch = `{"song":1,"album":0,"singer":0,"tagSong":1,"mvSong":0,"bestShow":1}`
+
+	// H5 播放接口响应体的字节变换约定（取自站点前端 bundle）：
+	//   body[0..2] = 0xAB 0xCD 0x01 固定头，body[3] = seed，
+	//   其后每字节 = 明文 + key[i%len(key)] - seed（mod 256）
+	miguCoderHeader1 = 0xAB
+	miguCoderHeader2 = 0xCD
+	miguCoderVersion = 0x01
+	miguCoderKey     = "Jk8qzuePiJ1qE3mDYhLQ3T73DtDoAhLP"
 )
 
 // NewMiguSource 创建咪咕音乐源
@@ -232,7 +245,8 @@ func (m *MiguSource) GetTrackDetail(ctx context.Context, id string) (*TrackDetai
 // ---------- 下载 / 试听 ----------
 
 // GetDownloadURL 返回可直接下载的音频地址。
-// listenSong.do 本身即音频字节流地址，无需二次跳转。
+// 优先走 H5 播放接口（不校验会员权益，白金会员曲目同样可用）；
+// 失败时回退 listenSong.do——该地址本身即音频字节流，无需二次跳转。
 func (m *MiguSource) GetDownloadURL(ctx context.Context, id string, quality Quality) (*DownloadURL, error) {
 	copyrightID, contentID, albumID, bestQuality, _, _ := parseMiguTrackID(id)
 	if copyrightID == "" || contentID == "" {
@@ -252,7 +266,37 @@ func (m *MiguSource) GetDownloadURL(ctx context.Context, id string, quality Qual
 		candidates = []string{"PQ", "LQ"}
 	}
 
-	var lastErr string
+	var lastErr, dialog string
+	for _, flag := range candidates {
+		direct, actualFlag, dialogText, err := m.miguH5Track(ctx, flag, copyrightID, contentID)
+		if err != nil {
+			lastErr = err.Error()
+			continue
+		}
+		if dialogText != "" {
+			dialog = dialogText
+		}
+		if direct == "" {
+			continue
+		}
+		contentType, size, code, perr := m.probe(ctx, direct)
+		if perr != nil {
+			lastErr = perr.Error()
+			continue
+		}
+		if code != "" || !miguIsAudio(contentType) {
+			lastErr = "咪咕 H5 直链不可用: " + contentType
+			continue
+		}
+		return &DownloadURL{
+			URL:      direct,
+			Quality:  miguActualQuality(actualFlag, flag, contentType, bestQuality),
+			Format:   miguFormatFromContentType(contentType, actualFlag),
+			FileSize: size,
+		}, nil
+	}
+
+	// 回退：listenSong.do 对免费曲目直接返回音频字节流
 	for _, flag := range candidates {
 		playURL := m.playURL(flag, copyrightID, contentID, albumID)
 		contentType, size, code, err := m.probe(ctx, playURL)
@@ -261,10 +305,6 @@ func (m *MiguSource) GetDownloadURL(ctx context.Context, id string, quality Qual
 			continue
 		}
 		if code != "" {
-			// 业务错误：无版权 / 需登录，换档位也无法取得
-			if strings.HasPrefix(code, "2000") {
-				return nil, fmt.Errorf("咪咕暂不提供该曲目地址（%s），VIP/无损曲目请在源配置中填入登录 token", code)
-			}
 			lastErr = "migu returned code " + code
 			continue
 		}
@@ -272,29 +312,41 @@ func (m *MiguSource) GetDownloadURL(ctx context.Context, id string, quality Qual
 			lastErr = "migu returned non-audio content: " + contentType
 			continue
 		}
-		// 咪咕会自动回退到「不超过请求档位的最高可用档位」，据此推算真实音质
-		actual := miguQualityFromFlag(flag)
-		if bestQuality != QualityAny && bestQuality < actual {
-			actual = bestQuality
-		}
-		if miguIsLossless(contentType) {
-			if actual < QualityFLAC {
-				actual = QualityFLAC
-			}
-		} else if actual >= QualityFLAC {
-			actual = Quality320
-		}
 		return &DownloadURL{
 			URL:      playURL,
-			Quality:  actual,
+			Quality:  miguActualQuality("", flag, contentType, bestQuality),
 			Format:   miguFormatFromContentType(contentType, flag),
 			FileSize: size,
 		}, nil
+	}
+
+	if dialog != "" {
+		return nil, fmt.Errorf("咪咕无法获取该曲目地址：%s", dialog)
 	}
 	if lastErr != "" {
 		return nil, fmt.Errorf("咪咕获取下载地址失败: %s", lastErr)
 	}
 	return nil, fmt.Errorf("咪咕无法获取下载地址")
+}
+
+// miguActualQuality 推算真实音质。咪咕会自动回退到「不超过请求档位的最高可用档位」，
+// 故以接口返回的 audioFormatType 为准，缺失时按请求档位，再以曲目最高档位封顶。
+func miguActualQuality(actualFlag, reqFlag, contentType string, bestQuality Quality) Quality {
+	actual := miguQualityFromFlag(actualFlag)
+	if actual == QualityAny {
+		actual = miguQualityFromFlag(reqFlag)
+	}
+	if bestQuality != QualityAny && bestQuality < actual {
+		actual = bestQuality
+	}
+	if miguIsLossless(contentType) {
+		if actual < QualityFLAC {
+			actual = QualityFLAC
+		}
+	} else if actual >= QualityFLAC {
+		actual = Quality320
+	}
+	return actual
 }
 
 // ---------- 歌词 / 封面 ----------
@@ -326,6 +378,101 @@ func (m *MiguSource) GetCover(ctx context.Context, id string) (*CoverResult, err
 }
 
 // ---------- 内部工具 ----------
+
+// miguH5Track 通过 H5 播放接口换取音频直链。
+// 返回 (直链, 实际档位, 受限提示)。受限时直链为空、提示非空（如"需开通白金会员"）。
+func (m *MiguSource) miguH5Track(ctx context.Context, toneFlag, copyrightID, contentID string) (string, string, string, error) {
+	q := url.Values{}
+	q.Set("contentId", contentID)
+	q.Set("copyrightId", copyrightID)
+	q.Set("resourceType", "2")
+	q.Set("netType", "01")
+	q.Set("toneFlag", toneFlag)
+	q.Set("scene", "")
+	q.Set("lowerQualityContentId", contentID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, miguH5ListenAPI+"?"+q.Encode(), nil)
+	if err != nil {
+		return "", "", "", err
+	}
+	m.applyH5Headers(req)
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return "", "", "", fmt.Errorf("migu h5 listen: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", "", "", fmt.Errorf("migu h5 read: %w", err)
+	}
+
+	var r struct {
+		Code string `json:"code"`
+		Info string `json:"info"`
+		Data struct {
+			URL             string `json:"url"`
+			AudioFormatType string `json:"audioFormatType"`
+			DialogInfo      struct {
+				Text string `json:"text"`
+			} `json:"dialogInfo"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(miguDecodeBody(body), &r); err != nil {
+		return "", "", "", fmt.Errorf("migu h5 decode: %w", err)
+	}
+	if r.Data.URL == "" {
+		return "", "", r.Data.DialogInfo.Text, nil
+	}
+	return r.Data.URL, r.Data.AudioFormatType, r.Data.DialogInfo.Text, nil
+}
+
+// miguDecodeBody 还原 H5 播放接口的响应体。
+// 请求头不完整时服务端会把同一份密文以十六进制字符串返回，此处一并兼容。
+func miguDecodeBody(body []byte) []byte {
+	if decoded, ok := miguHexCipher(body); ok {
+		body = decoded
+	}
+	if len(body) < 4 || body[0] != miguCoderHeader1 || body[1] != miguCoderHeader2 || body[2] != miguCoderVersion {
+		return body
+	}
+	seed := body[3]
+	key := []byte(miguCoderKey)
+	out := make([]byte, len(body)-4)
+	for i := 4; i < len(body); i++ {
+		out[i-4] = body[i] + seed - key[(i-4)%len(key)]
+	}
+	return out
+}
+
+// miguHexCipher 判断响应体是否为十六进制编码的密文并还原
+func miguHexCipher(body []byte) ([]byte, bool) {
+	if len(body) < 32 || len(body)%2 != 0 {
+		return nil, false
+	}
+	for _, c := range body[:16] {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return nil, false
+		}
+	}
+	decoded, err := hex.DecodeString(string(body))
+	if err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+// applyH5Headers 设置 H5 播放接口要求的请求头。
+// 实测仅 referer / channel / birth 三项为必需，缺 channel 返回 299999，缺 birth 返回十六进制密文错误。
+func (m *MiguSource) applyH5Headers(req *http.Request) {
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://m.music.migu.cn/v5/")
+	req.Header.Set("channel", miguH5Channel)
+	req.Header.Set("birth", "h5page")
+}
 
 // playURL 拼接 listenSong.do 地址；该地址直接返回音频字节流
 func (m *MiguSource) playURL(toneFlag, copyrightID, contentID, albumID string) string {

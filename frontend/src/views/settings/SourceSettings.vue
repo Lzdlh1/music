@@ -210,7 +210,7 @@ async function handleTest(id: string) {
             :rows="2"
             placeholder="可选：咪咕客户端抓包得到的 token（请求头 token 字段）"
           />
-          <template #feedback>不填也可用：搜索、歌词、封面与免费曲目试听/下载全部可用。填入后解锁无损（SQ/ZQ24）与 VIP 曲目</template>
+          <template #feedback>不填即可用：搜索、歌词、封面、试听与下载全部可用。播放走不校验会员权益的 H5 接口，白金会员曲目同样下发完整音频；数字专辑等需付费购买的曲目不受登录态影响</template>
         </n-form-item>
         <n-form-item v-if="form.type === 'migu'" label="账号 ID">
           <n-input v-model:value="form.config.user_id" placeholder="可选：抓包得到的 userId，留空使用默认公共账号" />

@@ -1,6 +1,8 @@
 # 编译产物
-/server
+/bin/
+server
 *.exe
+*.test
 
 # 数据文件
 data/
