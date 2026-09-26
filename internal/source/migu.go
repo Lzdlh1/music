@@ -385,7 +385,14 @@ func (m *MiguSource) miguH5Track(ctx context.Context, toneFlag, copyrightID, con
 	q := url.Values{}
 	q.Set("contentId", contentID)
 	q.Set("copyrightId", copyrightID)
-	q.Set("resourceType", "2")
+	// resourceType 随档位变化：搜索数据里无损(SQ)与 24bit(ZQ24) 的 resourceType 是 "E"，
+	// 其余档位是 "2"。此前硬编码 2 会让无损/24bit 请求被服务端当成不存在的资源。
+	rt := "2"
+	switch strings.ToUpper(toneFlag) {
+	case "SQ", "ZQ24", "ZQ":
+		rt = "E"
+	}
+	q.Set("resourceType", rt)
 	q.Set("netType", "01")
 	q.Set("toneFlag", toneFlag)
 	q.Set("scene", "")
@@ -626,6 +633,10 @@ func miguQualityFromFormats(formats []miguRateFormat) Quality {
 func miguQualityFromFlag(flag string) Quality {
 	switch strings.ToUpper(flag) {
 	case "ZQ", "ZQ24":
+		return QualityHiRes
+	case "AV3A":
+		// 咪咕臻品 3D 音质（m4a/全景声），档位高于无损，归入最高档显示，
+		// 否则这类资源会因枚举里没有对应档位而被显示成"未知"
 		return QualityHiRes
 	case "SQ":
 		return QualityFLAC

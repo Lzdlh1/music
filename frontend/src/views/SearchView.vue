@@ -24,7 +24,8 @@ const tgLoading = ref(false)
 
 const qualityOptions = [
   { label: '全部', value: '' },
-  { label: 'FLAC', value: 'flac' },
+  { label: 'Hi-Res (24BIT)', value: 'hires' },
+  { label: 'FLAC (无损)', value: 'flac' },
   { label: '320K', value: '320' },
   { label: '128K', value: '128' },
 ]

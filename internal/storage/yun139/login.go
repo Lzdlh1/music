@@ -451,7 +451,16 @@ func (lc *LoginClient) postEncrypted(ctx context.Context, path string, plain int
 		return nil, fmt.Errorf("yun139 login: 响应解密失败: %v, raw: %s", err, firstBytes(raw, 200))
 	}
 	trimmed := strings.TrimSpace(string(pt))
-	lc.log.Info("yun139 login response decrypted", zap.String("plain", trimmed))
+	// 只记录业务码与长度：解密后的响应体含 authToken 等登录凭据，禁止写入日志
+	var brief struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal([]byte(trimmed), &brief)
+	lc.log.Info("yun139 login response",
+		zap.String("code", brief.Code),
+		zap.String("message", brief.Message),
+		zap.Int("body_len", len(trimmed)))
 	var out thirdLoginResp
 	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
 		return nil, fmt.Errorf("yun139 login: 解密结果解析失败: %v, raw: %s", err, trimmed)
@@ -569,7 +578,7 @@ func (lc *LoginClient) thirdLogin(ctx context.Context, account, dycPwd string, l
 		zap.String("account", fullAccount),
 		zap.String("user_domain_id", data.UserDomainID),
 		zap.String("personal_host", extractPersonalHost(data.RouterInfo)),
-		zap.ByteString("data_raw", out.Data))
+		zap.Int("auth_token_len", len(authToken)))
 	return &LoginResult{
 		Authorization: buildAuth(fullAccount, authToken),
 		Account:       fullAccount,

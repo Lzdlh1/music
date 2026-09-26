@@ -26,10 +26,19 @@ function formatSize(bytes: number): string {
 }
 
 function qualityColor(quality: number): string {
+  if (quality >= 9999) return '#a855f7'
   if (quality >= 999) return '#3b82f6'
   if (quality >= 320) return '#22c55e'
   if (quality >= 128) return '#eab308'
   return '#9ca3af'
+}
+
+/** 音质标签：Hi-Res(24BIT) / FLAC / 320K / 128K，避免高档位被统一显示成 FLAC */
+function qualityText(quality: number): string {
+  if (quality >= 9999) return 'Hi-Res'
+  if (quality >= 999) return 'FLAC'
+  if (quality > 0) return quality + 'K'
+  return '未知'
 }
 </script>
 
@@ -61,7 +70,7 @@ function qualityColor(quality: number): string {
             round
             :color="{ textColor: qualityColor(track.quality) }"
           >
-            {{ track.quality >= 999 ? 'FLAC' : track.quality + 'K' }}
+            {{ qualityText(track.quality) }}
           </n-tag>
           <span class="track-meta" v-if="track.duration">
             {{ formatDuration(track.duration) }}

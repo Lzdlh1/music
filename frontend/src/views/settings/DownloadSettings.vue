@@ -6,6 +6,7 @@ import { getSetting, updateSetting } from '@/api/settings'
 const message = useMessage()
 
 const qualityOptions = [
+  { label: 'Hi-Res (24BIT)', value: 'HIRES' },
   { label: 'FLAC (无损)', value: 'FLAC' },
   { label: '320K', value: '320K' },
   { label: '128K', value: '128K' },
