@@ -214,12 +214,14 @@ async function handleTest(id: string) {
             v-model:value="form.config.token"
             type="textarea"
             :rows="2"
-            placeholder="可选：同方式执行 localStorage.getItem('mg_auth_utoken') 取值填入"
+            placeholder="必须填 Cookie 里的 pacmtoken，不是 localStorage 的 mg_auth_utoken"
           />
           <template #feedback>
-            搜索、歌词、封面、下载均无需登录；登录态用于让会员账号在服务端被识别（请求头 uid + pacmtoken）。
-            实测：未登录/非会员时，HQ(320K)、SQ(无损)、ZQ24(24BIT) 会被服务端一律降级为 PQ(128K)，
-            并以「会员歌曲试听中」提示；凭据仅存本机配置，日志中做掩码处理
+            <b>取值方式</b>：登录 music.migu.cn 后，F12 → Console 执行
+            <code>document.cookie.match(/pacmtoken=([^;]+)/)[1]</code>，把返回值填入。<br />
+            <b>注意</b>：localStorage 里的 <code>mg_auth_utoken</code> 是另一个值，填它会被服务端一律降级成
+            PQ(128K) 并提示「会员歌曲试听中」；只有 Cookie 里的 pacmtoken 能让会员账号被识别。
+            实测会员账号下可拿到 HQ(320K) 与 SQ(无损)/ZQ24(24BIT)；凭据仅存本机配置，日志做掩码处理
           </template>
         </n-form-item>
         <n-form-item label="超时(秒)">
