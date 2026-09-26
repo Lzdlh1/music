@@ -48,6 +48,29 @@ const metingSourceOptions = [
   { label: '酷狗音乐', value: 'kugou' },
 ]
 
+// 咪咕取凭据命令：本地部署走 http，navigator.clipboard 不可用，需回退到 execCommand
+async function copyMiguTokenCmd() {
+  const cmd = 'document.cookie.match(/pacmtoken=([^;]+)/)[1]'
+  try {
+    await navigator.clipboard.writeText(cmd)
+    message.success('已复制：去 music.migu.cn 的 F12 → Console 粘贴执行，把返回值填到上面')
+    return
+  } catch {
+    /* 非安全上下文，走回退 */
+  }
+  const ta = document.createElement('textarea')
+  ta.value = cmd
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand('copy')
+  document.body.removeChild(ta)
+  if (ok) {
+    message.success('已复制：去 music.migu.cn 的 F12 → Console 粘贴执行，把返回值填到上面')
+  } else {
+    message.warning('复制失败，请手动复制：' + cmd)
+  }
+}
+
 async function loadSources() {
   const res = await listSources()
   sources.value = res.data.data || []
@@ -216,6 +239,7 @@ async function handleTest(id: string) {
             :rows="2"
             placeholder="必须填 Cookie 里的 pacmtoken，不是 localStorage 的 mg_auth_utoken"
           />
+          <n-button size="tiny" style="margin-top: 6px;" @click="copyMiguTokenCmd">复制取值命令</n-button>
           <template #feedback>
             <b>取值方式</b>：登录 music.migu.cn 后，F12 → Console 执行
             <code>document.cookie.match(/pacmtoken=([^;]+)/)[1]</code>，把返回值填入。<br />
