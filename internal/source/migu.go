@@ -54,6 +54,8 @@ const (
 	miguPublicUID = "15548614588710179085069"
 
 	miguSearchSwitch = `{"song":1,"album":0,"singer":0,"tagSong":1,"mvSong":0,"bestShow":1}`
+	// 歌曲详情接口：搜索接口的档位表缺 24bit，只有这里能拿到 ZQ24/Z3D，用 songId 批量查
+	miguSongDetailAPI = "https://app.c.nf.migu.cn/MIGUM3.0/resource/song/by-songids/v2.0"
 
 	// H5 播放接口响应体的字节变换约定（取自站点前端 bundle）：
 	//   body[0..2] = 0xAB 0xCD 0x01 固定头，body[3] = seed，
@@ -120,6 +122,21 @@ type miguRateFormat struct {
 	Size         string   `json:"size"`
 	FileType     string   `json:"fileType"`
 	ShowTag      []string `json:"showTag"`
+	// 歌曲详情接口（by-songids）用 asize 表示安卓端文件大小，搜索接口用 size
+	ASize string `json:"asize"`
+}
+
+// bytes 取该档位的文件大小：优先搜索接口的 size，其次详情接口的 asize
+func (f miguRateFormat) bytes() int64 {
+	s := f.Size
+	if s == "" {
+		s = f.ASize
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 type miguImgItem struct {
@@ -128,6 +145,7 @@ type miguImgItem struct {
 }
 
 type miguSong struct {
+	ID          string        `json:"id"` // 即 songId，详情接口用它批量补齐档位
 	Name        string        `json:"name"`
 	CopyrightID string        `json:"copyrightId"`
 	ContentID   string        `json:"contentId"`
@@ -189,6 +207,8 @@ func (m *MiguSource) Search(ctx context.Context, query SearchQuery) ([]TrackResu
 	}
 
 	results := make([]TrackResult, 0, len(resp.SongResultData.Result))
+	// 与 results 一一对应的 songId，用于稍后批量补齐档位（保持下标对齐）
+	songIDs := make([]string, 0, len(resp.SongResultData.Result))
 	for _, s := range resp.SongResultData.Result {
 		if s.CopyrightID == "" || s.ContentID == "" || s.Name == "" {
 			continue
@@ -221,7 +241,11 @@ func (m *MiguSource) Search(ctx context.Context, query SearchQuery) ([]TrackResu
 			CoverURL: cover,
 			Score:    score + float64(m.priority),
 		})
+		songIDs = append(songIDs, s.ID)
 	}
+	// 搜索接口的档位表只到 SQ，24bit(ZQ24) 只在详情接口里，这里批量补齐再返回，
+	// 否则带 24bit 的曲目会被显示成 FLAC（档位与 ID 里的 bestQuality 也会一并升级）
+	m.miguEnrichQuality(ctx, songIDs, results)
 	return results, nil
 }
 
@@ -704,11 +728,76 @@ func miguSizeOfFormat(formats []miguRateFormat, quality Quality) int64 {
 		if miguQualityFromFlag(f.FormatType) != quality {
 			continue
 		}
-		if n, err := strconv.ParseInt(f.Size, 10, 64); err == nil && n > best {
+		if n := f.bytes(); n > best {
 			best = n
 		}
 	}
 	return best
+}
+
+// miguEnrichQuality 用歌曲详情接口补齐搜索接口缺失的高档位。
+// 实测：搜索接口的 rateFormats 只到 SQ（无损），24bit 仅出现在详情接口的 audioFormats
+// （formatType=ZQ24，七里香 asize≈67.5MB）；不补这一步，前端会把 24bit 曲目误显示成 FLAC。
+// 一次请求用 | 拼接多个 songId，成本可忽略；失败只记日志不影响搜索主流程。
+func (m *MiguSource) miguEnrichQuality(ctx context.Context, songIDs []string, results []TrackResult) {
+	if len(songIDs) == 0 || len(results) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(songIDs))
+	for _, id := range songIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	q := url.Values{}
+	q.Set("songId", strings.Join(ids, "|"))
+	body, err := m.get(ctx, miguSongDetailAPI+"?"+q.Encode())
+	if err != nil {
+		m.log.Warn("migu song detail enrich failed", zap.Error(err))
+		return
+	}
+	var resp struct {
+		Code string `json:"code"`
+		Data []struct {
+			SongID       string            `json:"songId"`
+			AudioFormats []miguRateFormat  `json:"audioFormats"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		m.log.Warn("migu song detail parse failed", zap.Error(err))
+		return
+	}
+	byID := make(map[string][]miguRateFormat, len(resp.Data))
+	for _, d := range resp.Data {
+		byID[d.SongID] = d.AudioFormats
+	}
+	upgraded := 0
+	for i, sid := range songIDs {
+		if i >= len(results) {
+			break
+		}
+		formats := byID[sid]
+		if len(formats) == 0 {
+			continue
+		}
+		best := miguQualityFromFormats(formats)
+		if best <= results[i].Quality {
+			continue
+		}
+		results[i].Quality = best
+		results[i].FileSize = miguSizeOfFormat(formats, best)
+		// 曲目 ID 里烘焙了 bestQuality，升级后必须重建，
+		// 否则下载时 miguActualQuality 会被 ID 里的旧档位（如 999/FLAC）封顶，24bit 只用到无损
+		copyrightID, contentID, albumID, _, cover, lyricURL := parseMiguTrackID(results[i].ID)
+		results[i].ID = miguTrackID(results[i].Source, copyrightID, contentID, albumID, best, cover, lyricURL)
+		upgraded++
+	}
+	m.log.Info("migu search quality enriched",
+		zap.Int("songs", len(songIDs)),
+		zap.Int("upgraded", upgraded))
 }
 
 // miguBestImg 取尺寸最大的一张封面
