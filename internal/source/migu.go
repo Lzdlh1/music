@@ -266,6 +266,16 @@ func (m *MiguSource) GetDownloadURL(ctx context.Context, id string, quality Qual
 		candidates = []string{"PQ", "LQ"}
 	}
 
+	// 详尽日志：记录请求档位与尝试顺序，便于排查"为什么拿不到无损/24bit"
+	m.log.Info("migu download url requested",
+		zap.String("track_id", id),
+		zap.Int("req_quality", int(quality)),
+		zap.String("req_quality_text", quality.String()),
+		zap.String("candidates", strings.Join(candidates, ">")),
+		zap.Int("best_quality", int(bestQuality)),
+		zap.String("uid", m.userID),
+		zap.String("token_masked", miguMask(m.token)))
+
 	var lastErr, dialog string
 	for _, flag := range candidates {
 		direct, actualFlag, dialogText, err := m.miguH5Track(ctx, flag, copyrightID, contentID)
@@ -288,9 +298,16 @@ func (m *MiguSource) GetDownloadURL(ctx context.Context, id string, quality Qual
 			lastErr = "咪咕 H5 直链不可用: " + contentType
 			continue
 		}
+		actualQuality := miguActualQuality(actualFlag, flag, contentType, bestQuality)
+		m.log.Info("migu download url resolved",
+			zap.String("via", "h5"),
+			zap.String("req_tone_flag", flag),
+			zap.String("actual_quality", actualQuality.String()),
+			zap.Int64("size", size),
+			zap.String("content_type", contentType))
 		return &DownloadURL{
 			URL:      direct,
-			Quality:  miguActualQuality(actualFlag, flag, contentType, bestQuality),
+			Quality:  actualQuality,
 			Format:   miguFormatFromContentType(contentType, actualFlag),
 			FileSize: size,
 		}, nil
@@ -429,6 +446,18 @@ func (m *MiguSource) miguH5Track(ctx context.Context, toneFlag, copyrightID, con
 	if err := json.Unmarshal(miguDecodeBody(body), &r); err != nil {
 		return "", "", "", fmt.Errorf("migu h5 decode: %w", err)
 	}
+	// 详尽日志：档位回退（如请求 SQ/ZQ24 被降级为 PQ）只有看这里的 audioFormatType 才能定位。
+	// 凭据仅记长度，不落 token 明文。
+	m.log.Info("migu h5 listen",
+		zap.String("content_id", contentID),
+		zap.String("copyright_id", copyrightID),
+		zap.String("req_tone_flag", toneFlag),
+		zap.String("code", r.Code),
+		zap.String("actual_format", r.Data.AudioFormatType),
+		zap.Bool("has_url", r.Data.URL != ""),
+		zap.String("dialog", r.Data.DialogInfo.Text),
+		zap.String("uid", m.userID),
+		zap.String("token_masked", miguMask(m.token)))
 	if r.Data.URL == "" {
 		return "", "", r.Data.DialogInfo.Text, nil
 	}
@@ -474,11 +503,30 @@ func miguHexCipher(body []byte) ([]byte, bool) {
 
 // applyH5Headers 设置 H5 播放接口要求的请求头。
 // 实测仅 referer / channel / birth 三项为必需，缺 channel 返回 299999，缺 birth 返回十六进制密文错误。
+// 配置了「咪咕 UID + Token」时额外带上 uid / pacmtoken（网页端与 APP 都是这两个头携带登录态），
+// 用于让会员账号在服务端被识别；凭据本身一律不写日志，只记长度。
 func (m *MiguSource) applyH5Headers(req *http.Request) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 	req.Header.Set("Referer", "https://m.music.migu.cn/v5/")
 	req.Header.Set("channel", miguH5Channel)
 	req.Header.Set("birth", "h5page")
+	if m.userID != "" && m.userID != miguPublicUID {
+		req.Header.Set("uid", m.userID)
+	}
+	if m.token != "" {
+		req.Header.Set("pacmtoken", m.token)
+	}
+}
+
+// miguMask 凭据掩码：只暴露长度与首尾少量字符，避免日志泄露登录态
+func miguMask(s string) string {
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 8 {
+		return fmt.Sprintf("<len=%d>", len(s))
+	}
+	return fmt.Sprintf("%s…%s(len=%d)", s[:4], s[len(s)-4:], len(s))
 }
 
 // playURL 拼接 listenSong.do 地址；该地址直接返回音频字节流

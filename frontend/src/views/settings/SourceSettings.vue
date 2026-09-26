@@ -46,7 +46,6 @@ const metingSourceOptions = [
   { label: 'Bilibili', value: 'bilibili' },
   { label: '腾讯音乐', value: 'tencent' },
   { label: '酷狗音乐', value: 'kugou' },
-  { label: '咪咕音乐', value: 'migu' },
 ]
 
 async function loadSources() {
@@ -203,17 +202,25 @@ async function handleTest(id: string) {
           <n-input-number v-model:value="form.config.limit" :min="1" :max="9999" style="width: 160px;" />
           <span style="margin-left: 8px; color: #999; font-size: 12px;">豪华绿钻为 300/月（本地参考统计）</span>
         </n-form-item>
-        <n-form-item v-if="form.type === 'migu'" label="登录 Token">
+        <n-form-item v-if="form.type === 'migu'" label="咪咕 UID">
+          <n-input v-model:value="form.config.user_id" placeholder="留空使用公共账号（免登录只能取 128K）" />
+          <template #feedback>
+            登录 music.migu.cn 后，F12 → Console 执行
+            <code>localStorage.getItem('mg_auth_uid')</code> 取值填入
+          </template>
+        </n-form-item>
+        <n-form-item v-if="form.type === 'migu'" label="咪咕 Token (pacmtoken)">
           <n-input
             v-model:value="form.config.token"
             type="textarea"
             :rows="2"
-            placeholder="可选：咪咕客户端抓包得到的 token（请求头 token 字段）"
+            placeholder="可选：同方式执行 localStorage.getItem('mg_auth_utoken') 取值填入"
           />
-          <template #feedback>不填即可用：搜索、歌词、封面、试听与下载全部可用。播放走不校验会员权益的 H5 接口，白金会员曲目同样下发完整音频；数字专辑等需付费购买的曲目不受登录态影响</template>
-        </n-form-item>
-        <n-form-item v-if="form.type === 'migu'" label="账号 ID">
-          <n-input v-model:value="form.config.user_id" placeholder="可选：抓包得到的 userId，留空使用默认公共账号" />
+          <template #feedback>
+            搜索、歌词、封面、下载均无需登录；登录态用于让会员账号在服务端被识别（请求头 uid + pacmtoken）。
+            实测：未登录/非会员时，HQ(320K)、SQ(无损)、ZQ24(24BIT) 会被服务端一律降级为 PQ(128K)，
+            并以「会员歌曲试听中」提示；凭据仅存本机配置，日志中做掩码处理
+          </template>
         </n-form-item>
         <n-form-item label="超时(秒)">
           <n-input-number v-model:value="form.config.timeout" :min="5" :max="120" />
